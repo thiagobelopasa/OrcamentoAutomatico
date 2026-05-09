@@ -4,8 +4,9 @@ from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
 
-# URL do banco de dados
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///orcamento.db")
+# Railway monta volume persistente em /data; fallback local para dev
+_DB_PATH = "/data/orcamento.db" if os.path.isdir("/data") else "orcamento.db"
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{_DB_PATH}")
 
 # Criar engine
 engine = create_engine(
