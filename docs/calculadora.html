@@ -227,6 +227,7 @@ table tr:last-child td{border-bottom:none}
     📋 Orçamento<span class="dot" id="dot-orc"></span>
   </div>
   <div class="tab" onclick="goTab('busca')" id="tab-busca">🔍 Histórico</div>
+  <div class="tab" onclick="goTab('banco')" id="tab-banco">🧠 Banco Visual</div>
 </div>
 
 <!-- ═══════════════════ NOVA ANÁLISE ═══════════════════ -->
@@ -414,6 +415,59 @@ table tr:last-child td{border-bottom:none}
   </div>
 </div>
 
+<!-- ═══════════════════ BANCO VISUAL ═══════════════════ -->
+<div class="page" id="page-banco">
+  <div class="card">
+    <div class="card-title">🧠 Análise Visual do Banco Histórico</div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:18px">
+      Para melhorar a qualidade dos matches, o sistema analisa cada foto do histórico do Trello com Claude Vision
+      e identifica a estrutura (encosto, assento, braço). Isso eleva a precisão de 45% base para 70-100%.
+    </p>
+
+    <!-- Status geral -->
+    <div id="bancoStatus" style="background:var(--cream);border-radius:var(--r);padding:18px;margin-bottom:18px">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px" id="bancoKpis">
+        <div class="kpi"><div class="kl">Total no banco</div><div class="kv" id="kTot">—</div></div>
+        <div class="kpi"><div class="kl">Analisados</div><div class="kv" id="kAnal" style="color:var(--success)">—</div></div>
+        <div class="kpi"><div class="kl">Pendentes</div><div class="kv" id="kPend" style="color:var(--warn)">—</div></div>
+      </div>
+      <!-- Barra de progresso -->
+      <div style="background:var(--beige);border-radius:20px;height:12px;overflow:hidden;margin-bottom:8px">
+        <div id="progressBar" style="height:100%;background:var(--success);border-radius:20px;transition:width .5s;width:0%"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted)">
+        <span id="progressPct">0% analisado</span>
+        <span id="progressAtual"></span>
+      </div>
+    </div>
+
+    <!-- Controles -->
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-primary" id="btnIniciar" onclick="iniciarAnalise()">
+        🚀 Iniciar Análise Visual
+      </button>
+      <button class="btn btn-outline" id="btnParar" onclick="pararAnalise()" style="display:none">
+        ⏹ Parar
+      </button>
+      <button class="btn btn-outline btn-sm" onclick="verificarStatus()">
+        🔄 Atualizar Status
+      </button>
+    </div>
+
+    <!-- Log em tempo real -->
+    <div id="bancoLog" style="display:none;margin-top:18px">
+      <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">Progresso em tempo real</div>
+      <div id="logBox" style="background:#1e1e1e;color:#d4d4d4;border-radius:8px;padding:14px;font-size:12px;font-family:monospace;max-height:200px;overflow-y:auto;line-height:1.6"></div>
+    </div>
+
+    <!-- Aviso de custo -->
+    <div style="margin-top:16px;padding:12px;background:#FFF3CD;border-radius:8px;font-size:12px;color:var(--warn)">
+      💡 <strong>Custo estimado:</strong> ~R$ 5-8 em créditos Claude para analisar todos os projetos (~300 fotos).
+      A análise roda em background — você pode continuar usando o sistema normalmente.
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════ LOADING ═══════════════════ -->
 <div class="overlay" id="overlay">
   <div class="loading-box">
@@ -432,8 +486,8 @@ table tr:last-child td{border-bottom:none}
     <h3>⚙️ Configuração da API</h3>
     <div class="form-group">
       <label>URL do Backend</label>
-      <input type="text" id="apiUrlInput" placeholder="http://localhost:8771">
-      <small>Em produção: URL do Render.com/Railway. Localmente: http://localhost:8771</small>
+      <input type="text" id="apiUrlInput" placeholder="http://localhost:8774">
+      <small>Em produção: URL do Render.com/Railway. Localmente: http://localhost:8774</small>
     </div>
     <div class="form-group">
       <label>Taxa Mão de Obra (R$/hora)</label>
@@ -449,7 +503,7 @@ table tr:last-child td{border-bottom:none}
 
 <script>
 // ═══════════════ CONFIG ═══════════════
-let API = localStorage.getItem('imperial_api') || 'http://localhost:8771';
+let API = localStorage.getItem('imperial_api') || 'http://localhost:8774';
 let TAXA_HORA = parseFloat(localStorage.getItem('imperial_taxa_hora') || '50');
 
 function toggleModal() {
@@ -469,10 +523,11 @@ document.getElementById('modalBg').addEventListener('click', e => { if(e.target=
 
 // ═══════════════ TABS ═══════════════
 function goTab(name) {
-  ['nova','orcamento','busca'].forEach(n => {
+  ['nova','orcamento','busca','banco'].forEach(n => {
     document.getElementById('tab-'+n).classList.toggle('active', n===name);
     document.getElementById('page-'+n).classList.toggle('active', n===name);
   });
+  if (name === 'banco') verificarStatus();
 }
 
 // ═══════════════ UPLOAD ═══════════════
@@ -872,6 +927,92 @@ function toast(msg, type='ok') {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = `toast on ${type}`;
   setTimeout(() => t.classList.remove('on'), 3500);
+}
+
+// ═══════════════ BANCO VISUAL ═══════════════
+let _pollInterval = null;
+
+async function verificarStatus() {
+  try {
+    const res = await fetch(`${API}/matching/analisar-historico/status`);
+    const d = await res.json();
+    const b = d.banco;
+    const batch = d.batch;
+
+    document.getElementById('kTot').textContent  = b.total;
+    document.getElementById('kAnal').textContent = b.analisados;
+    document.getElementById('kPend').textContent = b.pendentes;
+    document.getElementById('progressBar').style.width = b.pct_completo + '%';
+    document.getElementById('progressPct').textContent = `${b.pct_completo}% analisado`;
+
+    const btnI = document.getElementById('btnIniciar');
+    const btnP = document.getElementById('btnParar');
+
+    if (batch.running) {
+      const done = batch.done, total = batch.total, erros = batch.errors;
+      const pct = total > 0 ? Math.round(done/total*100) : 0;
+      document.getElementById('progressAtual').textContent =
+        `Em andamento: ${done}/${total} (${erros} erros)`;
+      btnI.style.display = 'none';
+      btnP.style.display = 'inline-flex';
+      // Log
+      document.getElementById('bancoLog').style.display = 'block';
+      const log = document.getElementById('logBox');
+      if (batch.current_nome) {
+        const line = document.createElement('div');
+        line.textContent = `[${new Date().toLocaleTimeString('pt-BR')}] Analisando: ${batch.current_nome}`;
+        log.appendChild(line);
+        log.scrollTop = log.scrollHeight;
+      }
+    } else {
+      document.getElementById('progressAtual').textContent =
+        b.pendentes > 0 ? `${b.pendentes} projetos aguardando análise` : '✓ Todos analisados!';
+      btnI.style.display = 'inline-flex';
+      btnP.style.display = 'none';
+      btnI.textContent = b.pendentes > 0 ? `🚀 Analisar ${b.pendentes} projetos` : '✓ Completo';
+      btnI.disabled = b.pendentes === 0;
+      if (_pollInterval) {
+        clearInterval(_pollInterval);
+        _pollInterval = null;
+        if (batch.done > 0) toast(`✓ Análise concluída! ${batch.done} projetos analisados`, 'ok');
+      }
+    }
+  } catch(e) {
+    document.getElementById('progressAtual').textContent = `Erro: ${e.message}`;
+  }
+}
+
+async function iniciarAnalise() {
+  try {
+    document.getElementById('btnIniciar').disabled = true;
+    document.getElementById('bancoLog').style.display = 'block';
+    document.getElementById('logBox').innerHTML = `<div>[${new Date().toLocaleTimeString('pt-BR')}] Iniciando análise...</div>`;
+
+    const res = await fetch(`${API}/matching/analisar-historico`, { method: 'POST' });
+    const d = await res.json();
+
+    if (d.total_a_analisar) {
+      toast(`Análise iniciada: ${d.total_a_analisar} projetos (~${d.estimativa_minutos} min)`, 'ok');
+      // Poll a cada 3s
+      _pollInterval = setInterval(verificarStatus, 3000);
+      verificarStatus();
+    } else {
+      toast(d.mensagem || 'Resposta inesperada', 'err');
+      document.getElementById('btnIniciar').disabled = false;
+    }
+  } catch(e) {
+    toast(`Erro: ${e.message}`, 'err');
+    document.getElementById('btnIniciar').disabled = false;
+  }
+}
+
+async function pararAnalise() {
+  try {
+    await fetch(`${API}/matching/analisar-historico/parar`, { method: 'POST' });
+    toast('Parada solicitada — aguardando projeto atual', 'ok');
+  } catch(e) {
+    toast(`Erro: ${e.message}`, 'err');
+  }
 }
 </script>
 </body>

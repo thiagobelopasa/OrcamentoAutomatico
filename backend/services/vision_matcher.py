@@ -4,14 +4,23 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 import os
 
-# Tenta importar Anthropic, mas permite funcionamento em modo demo
 try:
     from anthropic import Anthropic
-    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    ANTHROPIC_AVAILABLE = True
-except (ImportError, Exception):
-    client = None
-    ANTHROPIC_AVAILABLE = False
+    _ANTHROPIC_INSTALLED = True
+except ImportError:
+    _ANTHROPIC_INSTALLED = False
+
+def _get_client():
+    """Cria cliente Anthropic lazily, lendo a key no momento da chamada."""
+    if not _ANTHROPIC_INSTALLED:
+        return None
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        return None
+    try:
+        return Anthropic(api_key=key)
+    except Exception:
+        return None
 
 class VisionMatcher:
     """Compara estrutura visual de sofás usando Claude Vision"""
@@ -45,8 +54,8 @@ class VisionMatcher:
         Ignora cor e tecido, foca em FORMA.
         Em modo demo, retorna análise de exemplo.
         """
-        if not ANTHROPIC_AVAILABLE or not client:
-            # Modo demo - retorna análise de exemplo para teste
+        client = _get_client()
+        if not client:
             return {
                 "encosto": "duas_almofadas",
                 "assento": "lisa_costura",
@@ -86,7 +95,7 @@ Responda APENAS com JSON, sem markdown.
 """
 
             message = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=500,
                 messages=[
                     {
