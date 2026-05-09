@@ -116,6 +116,7 @@ class TrelloSync:
             resultado['total_cards'] += len(cards)
 
             for card in cards:
+                await asyncio.sleep(0.12)  # respeita rate limit do Trello (~8 req/s)
                 anexos = await self.obter_anexos_card(card['id'])
                 card_data = {
                     'id': card['id'],
