@@ -503,7 +503,11 @@ table tr:last-child td{border-bottom:none}
 
 <script>
 // ═══════════════ CONFIG ═══════════════
-let API = localStorage.getItem('imperial_api') || 'https://orcamentoautomatico-rfax.onrender.com';
+let API = localStorage.getItem('imperial_api') || (
+  window.location.hostname === 'thiagobelopasa.github.io'
+    ? 'https://orcamentoautomatico-rfax.onrender.com'
+    : window.location.origin
+);
 let TAXA_HORA = parseFloat(localStorage.getItem('imperial_taxa_hora') || '50');
 
 function toggleModal() {

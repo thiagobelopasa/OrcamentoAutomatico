@@ -1,9 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
+from pathlib import Path
 import os
 import logging
 from dotenv import load_dotenv
+
+_DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 
 from routers import projetos, matching
 from database import init_db, SessionLocal, ProjetoORM
@@ -131,11 +135,18 @@ def health():
 
 @app.get("/")
 def root():
-    return {
-        "nome": "Orçamento Automático API",
-        "versao": "0.2.0",
-        "docs": "/docs",
-    }
+    html = _DOCS_DIR / "calculadora.html"
+    if html.exists():
+        return FileResponse(str(html), media_type="text/html")
+    return {"nome": "Orçamento Automático API", "versao": "0.2.0", "docs": "/docs"}
+
+
+@app.get("/calculadora")
+def calculadora():
+    html = _DOCS_DIR / "calculadora.html"
+    if html.exists():
+        return FileResponse(str(html), media_type="text/html")
+    return {"erro": "calculadora.html não encontrada"}
 
 
 if __name__ == "__main__":
