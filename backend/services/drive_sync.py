@@ -150,22 +150,9 @@ async def listar_arquivos_drive_publico(folder_id: str) -> list[dict]:
     return await _listar_embeddedfolderview(folder_id, _depth=0)
 
 
-# Padrão de ID do Drive (25–50 chars alfanuméricos)
-_ID_RE = re.compile(r'[A-Za-z0-9_-]{25,50}')
-
-# Padrão de entrada no embeddedfolderview:
-# <div class="flip-entry" id="entry-{ID}"> ... href="{HREF}" ... flip-entry-title>{NAME}<
-_ENTRY_RE = re.compile(
-    r'id="entry-([A-Za-z0-9_-]{25,50})".*?'
-    r'href="([^"]+)".*?'
-    r'class="flip-entry-title">([^<]+)<',
-    re.DOTALL
-)
-
-
 async def _listar_embeddedfolderview(folder_id: str, _depth: int = 0) -> list[dict]:
     """Recursivo: lista arquivos de pasta pública via embeddedfolderview."""
-    if _depth > 3:
+    if _depth > 4:
         return []
 
     url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
@@ -185,18 +172,36 @@ async def _listar_embeddedfolderview(folder_id: str, _depth: int = 0) -> list[di
     html = resp.text
     arquivos: list[dict] = []
 
-    for m in _ENTRY_RE.finditer(html):
-        entry_id = m.group(1)
-        href = m.group(2)
-        name = m.group(3).strip()
+    # Divide o HTML por cada entrada (cada arquivo/pasta é um bloco flip-entry)
+    # Isso evita que regex cruzem fronteiras entre entradas diferentes
+    chunks = html.split('<div class="flip-entry"')
+
+    for chunk in chunks[1:]:  # chunk[0] é o HTML antes da primeira entrada
+        # ID da entrada: id="entry-{ID}"
+        id_m = re.search(r'id="entry-([A-Za-z0-9_-]{25,50})"', chunk[:120])
+        if not id_m:
+            continue
+        entry_id = id_m.group(1)
+
+        # Href do link (primeiros 600 chars do chunk devem conter o href)
+        href_m = re.search(r'href="(https://[^"]+)"', chunk[:600])
+        if not href_m:
+            continue
+        href = href_m.group(1)
+
+        # Nome da entrada: class="flip-entry-title">{NAME}<
+        name_m = re.search(r'class="flip-entry-title">([^<]+)<', chunk[:1200])
+        if not name_m:
+            continue
+        name = name_m.group(1).strip()
 
         if "/drive/folders/" in href:
-            # É uma subpasta — recursão
+            # Subpasta — recursão
             sub = await _listar_embeddedfolderview(entry_id, _depth + 1)
             arquivos.extend(sub)
-            await asyncio.sleep(0.3)  # respeita rate do Drive
+            await asyncio.sleep(0.2)
         else:
-            # É um arquivo — aceita só imagens
+            # Arquivo — aceita só imagens
             ext = Path(name).suffix.lower()
             if ext in _EXT_IMAGEM:
                 arquivos.append({
