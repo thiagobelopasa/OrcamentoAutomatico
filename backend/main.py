@@ -1,9 +1,24 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 import os
+from dotenv import load_dotenv
 
-app = FastAPI(title="Orçamento Automático API")
+from routers import projetos
+from database import init_db
+
+# Carrega variáveis de ambiente
+load_dotenv()
+
+# Inicializa banco de dados
+init_db()
+
+app = FastAPI(
+    title="Orçamento Automático API",
+    description="Sistema de gestão de projetos (sofás) com integração Trello e Claude Vision API",
+    version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # CORS
 app.add_middleware(
@@ -14,10 +29,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Routers
+app.include_router(projetos.router)
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "version": "0.1.0",
+        "timestamp": "2025-05-08"
+    }
+
+@app.get("/")
+def root():
+    return {
+        "nome": "Orçamento Automático API",
+        "versao": "0.1.0",
+        "descricao": "Sistema de gestão de projetos de sofás com integração Trello",
+        "endpoints": {
+            "health": "/health",
+            "projetos": "/projetos",
+            "docs": "/docs",
+            "redoc": "/redoc"
+        },
+        "features": [
+            "CRUD de projetos",
+            "Upload e análise de imagens com Claude Vision",
+            "Sincronização com Trello (polling 24h)",
+            "Rastreamento de materiais e horas de trabalho",
+            "Comparação orçado vs realizado"
+        ]
+    }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("API_PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
