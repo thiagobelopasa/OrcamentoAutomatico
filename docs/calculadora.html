@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calculadora Imperial — Estofados Imperial</title>
+<style>
+:root {
+  --brown-dark:#4A2C17; --brown-mid:#7B4A2D; --brown-light:#C48B5A;
+  --cream:#FDF6EE;      --cream-dark:#F0E4D0; --beige:#E8D5B7;
+  --text:#2C1810;       --text-muted:#8B6B55; --white:#FFFFFF;
+  --success:#2D6A4F;    --error:#991B1B;      --warn:#856404;
+  --shadow:0 4px 20px rgba(74,44,23,.12);     --r:12px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--cream);color:var(--text);min-height:100vh}
+
+/* HEADER */
+.header{background:var(--brown-dark);padding:16px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100;box-shadow:0 2px 12px rgba(0,0,0,.3)}
+.header h1{color:var(--cream);font-size:20px;font-weight:700;flex:1}
+.header p{color:var(--brown-light);font-size:12px;margin-top:2px}
+.settings-btn{background:rgba(255,255,255,.1);border:none;color:white;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:14px}
+.settings-btn:hover{background:rgba(255,255,255,.2)}
+
+/* API CONFIG BANNER */
+.api-banner{display:none;background:#FFF3CD;border-bottom:1px solid #FFC107;padding:10px 24px;font-size:13px;color:#856404;display:flex;align-items:center;gap:10px}
+.api-banner input{flex:1;max-width:340px;padding:6px 10px;border:1px solid #FFC107;border-radius:6px;font-size:13px;background:white}
+.api-banner button{padding:6px 14px;background:#856404;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px}
+
+/* TABS */
+.tabs{background:var(--brown-mid);display:flex;padding:0 24px;overflow-x:auto}
+.tab{padding:13px 20px;color:rgba(255,255,255,.6);font-size:13px;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;transition:all .2s;white-space:nowrap;position:relative}
+.tab:hover{color:white}
+.tab.active{color:white;border-bottom-color:var(--brown-light)}
+.tab .dot{display:none;position:absolute;top:10px;right:8px;width:7px;height:7px;background:#F59E0B;border-radius:50%}
+.tab .dot.show{display:block}
+
+/* PAGES */
+.page{display:none;padding:24px;max-width:1100px;margin:0 auto}
+.page.active{display:block}
+
+/* CARD */
+.card{background:white;border-radius:var(--r);box-shadow:var(--shadow);padding:24px;margin-bottom:20px}
+.card-title{font-size:14px;font-weight:700;color:var(--brown-dark);margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.card-title::after{content:'';flex:1;height:1px;background:var(--beige)}
+
+/* FORM */
+label{display:block;font-size:11px;font-weight:700;color:var(--text-muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+input[type=text],input[type=number],select,textarea{width:100%;padding:11px 13px;border:2px solid var(--beige);border-radius:8px;font-size:14px;font-family:inherit;color:var(--text);background:var(--cream);transition:border-color .2s}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brown-light);background:white}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.form-group{margin-bottom:14px}
+
+/* UPLOAD */
+.upload-zone{border:2px dashed var(--brown-light);border-radius:var(--r);padding:36px 20px;text-align:center;cursor:pointer;background:var(--cream);transition:all .2s}
+.upload-zone:hover,.upload-zone.over{border-color:var(--brown-dark);background:var(--cream-dark)}
+.upload-zone .icon{font-size:40px;margin-bottom:8px}
+.upload-zone .txt{color:var(--brown-mid);font-weight:600}
+.upload-zone .hint{color:var(--text-muted);font-size:12px;margin-top:3px}
+#fileInput{display:none}
+
+/* BUTTONS */
+.btn{padding:12px 24px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:6px;justify-content:center}
+.btn-primary{background:var(--brown-dark);color:white}
+.btn-primary:hover:not(:disabled){background:var(--brown-mid);transform:translateY(-1px);box-shadow:0 6px 20px rgba(74,44,23,.3)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{background:transparent;color:var(--brown-dark);border:2px solid var(--brown-dark)}
+.btn-outline:hover{background:var(--cream-dark)}
+.btn-success{background:var(--success);color:white}
+.btn-success:hover{opacity:.9}
+.btn-full{width:100%}
+.btn-sm{padding:8px 14px;font-size:12px}
+
+/* RESULTADO ANÁLISE */
+.analysis-grid{display:grid;grid-template-columns:1fr 2fr;gap:20px;align-items:start}
+
+.photo-panel{position:relative}
+.photo-panel img{width:100%;border-radius:var(--r);object-fit:cover;max-height:320px;box-shadow:var(--shadow)}
+.photo-tag{position:absolute;top:10px;left:10px;background:rgba(74,44,23,.85);color:white;font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px}
+.filename{font-size:11px;color:var(--text-muted);text-align:center;margin-top:6px;word-break:break-all}
+
+.vision-badges{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+.badge{background:var(--cream-dark);border:1px solid var(--beige);border-radius:20px;padding:4px 11px;font-size:11px;font-weight:600;color:var(--brown-mid)}
+.badge span{color:var(--text-muted);font-weight:400}
+
+/* MATCH CARDS — COM FOTO HISTÓRICA */
+.match-card{border:2px solid var(--beige);border-radius:var(--r);overflow:hidden;margin-bottom:12px;transition:all .2s;cursor:pointer}
+.match-card:hover{border-color:var(--brown-light);box-shadow:0 4px 16px rgba(74,44,23,.1)}
+.match-card.selected{border-color:var(--brown-dark);box-shadow:0 0 0 3px rgba(74,44,23,.15)}
+.match-inner{display:grid;grid-template-columns:110px 1fr auto;align-items:center}
+
+/* foto histórica no card */
+.match-photo{width:110px;height:110px;object-fit:cover;display:block;flex-shrink:0}
+.match-photo-empty{width:110px;height:110px;background:var(--cream-dark);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-muted);font-size:11px;text-align:center;padding:8px;flex-shrink:0}
+.match-photo-empty .ico{font-size:28px;margin-bottom:4px}
+
+.match-body{padding:14px}
+.match-body h4{font-size:13px;font-weight:700;color:var(--brown-dark);margin-bottom:6px}
+.match-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.meta{font-size:11px;color:var(--text-muted);background:var(--cream);padding:3px 8px;border-radius:4px}
+.meta b{color:var(--text)}
+
+.match-right{padding:14px;text-align:right;border-left:1px solid var(--beige);min-width:110px}
+.pct-big{font-size:32px;font-weight:900;line-height:1}
+.pct-label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:8px}
+.price-hist{font-size:14px;font-weight:700;color:var(--brown-dark);margin-bottom:10px}
+.price-hist span{font-size:10px;font-weight:400;color:var(--text-muted);display:block}
+
+/* === PÁGINA ORÇAMENTO === */
+.orc-grid{display:grid;grid-template-columns:280px 1fr;gap:20px;align-items:start}
+
+.ref-card{position:sticky;top:80px}
+.ref-photo-wrap{position:relative;border-radius:var(--r);overflow:hidden;margin-bottom:12px}
+.ref-photo-wrap img{width:100%;max-height:220px;object-fit:cover}
+.ref-photo-empty{width:100%;height:180px;background:var(--cream-dark);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:var(--r);color:var(--text-muted);font-size:13px}
+.ref-tag{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(74,44,23,.85));color:white;padding:24px 12px 10px;font-size:12px;font-weight:600}
+.ref-info-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--beige);font-size:13px}
+.ref-info-row:last-child{border-bottom:none}
+.ref-info-row .lbl{color:var(--text-muted);font-size:11px;text-transform:uppercase}
+.ref-info-row .val{font-weight:700;color:var(--brown-dark)}
+
+/* TABELA ORÇAMENTO */
+.orc-table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px}
+.orc-table th{background:var(--cream-dark);color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:8px 10px;text-align:left;font-weight:700}
+.orc-table td{padding:8px 10px;border-bottom:1px solid var(--cream-dark)}
+.orc-table tr:last-child td{border-bottom:none}
+.orc-table input[type=number]{width:80px;padding:6px 8px;font-size:13px;border:1px solid var(--beige);border-radius:5px;background:white;text-align:right}
+.orc-table input[type=text]{padding:6px 8px;font-size:13px;border:1px solid var(--beige);border-radius:5px;background:white}
+.orc-table .total-cell{font-weight:700;color:var(--brown-dark);text-align:right}
+.add-row-btn{background:none;border:none;color:var(--brown-light);cursor:pointer;font-size:12px;font-weight:600;padding:6px 0;width:100%;text-align:left}
+.add-row-btn:hover{color:var(--brown-dark)}
+.del-btn{background:none;border:none;color:#ccc;cursor:pointer;font-size:16px;padding:2px 4px}
+.del-btn:hover{color:var(--error)}
+
+/* TOTAIS */
+.totais-box{background:var(--cream);border-radius:var(--r);padding:18px;margin-top:16px}
+.totais-row{display:flex;justify-content:space-between;padding:6px 0;font-size:14px;border-bottom:1px solid var(--beige)}
+.totais-row:last-child{border-bottom:none;font-size:18px;font-weight:800;color:var(--brown-dark);margin-top:6px}
+.totais-row .lbl{color:var(--text-muted)}
+.margem-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--beige)}
+.margem-row label{margin:0;font-size:13px;color:var(--text-muted);width:auto}
+.margem-row input{width:70px;text-align:center}
+
+/* COPY AREA */
+.copy-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+
+/* BUSCA */
+.search-bar{display:flex;gap:10px;margin-bottom:20px}
+.search-bar input{flex:1}
+.search-bar .btn{width:auto;flex-shrink:0}
+
+/* PROJETO HIST CARD */
+.hist-card{background:white;border-radius:var(--r);box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden}
+.hist-head{background:var(--brown-dark);padding:14px 18px;display:flex;align-items:center;justify-content:space-between;cursor:pointer}
+.hist-head h3{color:white;font-size:14px;font-weight:700}
+.hist-head .sub{color:var(--brown-light);font-size:11px;margin-top:2px}
+.hist-head .chev{color:white;font-size:18px;transition:transform .2s}
+.hist-head.open .chev{transform:rotate(180deg)}
+.hist-body{display:none;padding:20px}
+.hist-body.open{display:block}
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--cream);border-radius:8px;padding:12px}
+.kpi .kl{font-size:10px;color:var(--text-muted);text-transform:uppercase;font-weight:700}
+.kpi .kv{font-size:20px;font-weight:800;color:var(--brown-dark)}
+.foto-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.foto-box{position:relative;border-radius:8px;overflow:hidden;aspect-ratio:4/3;background:var(--cream-dark);display:flex;align-items:center;justify-content:center}
+.foto-box img{width:100%;height:100%;object-fit:cover}
+.foto-box .nf{color:var(--text-muted);font-size:12px;text-align:center}
+.foto-tag{position:absolute;top:8px;left:8px;background:rgba(74,44,23,.8);color:white;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px}
+table th{background:var(--cream-dark);color:var(--text-muted);font-size:11px;text-transform:uppercase;padding:8px 10px;text-align:left}
+table td{padding:9px 10px;border-bottom:1px solid var(--cream-dark);font-size:13px}
+table tr:last-child td{border-bottom:none}
+.tbl-title{font-size:11px;font-weight:700;color:var(--brown-mid);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 8px}
+
+/* LOADING */
+.overlay{display:none;position:fixed;inset:0;background:rgba(74,44,23,.55);z-index:1000;align-items:center;justify-content:center}
+.overlay.on{display:flex}
+.loading-box{background:white;padding:40px 56px;border-radius:var(--r);text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.spinner{width:48px;height:48px;border:5px solid var(--beige);border-top-color:var(--brown-dark);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-box p{color:var(--brown-dark);font-weight:700;font-size:15px}
+.loading-box small{color:var(--text-muted);font-size:12px}
+
+/* TOAST */
+.toast{position:fixed;bottom:20px;right:20px;padding:12px 18px;border-radius:10px;color:white;font-weight:600;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.2);transform:translateY(60px);opacity:0;transition:all .3s;z-index:2000}
+.toast.on{transform:translateY(0);opacity:1}
+.toast.ok{background:var(--success)}
+.toast.err{background:var(--error)}
+
+/* EMPTY */
+.empty{text-align:center;padding:50px 20px;color:var(--text-muted)}
+.empty .ic{font-size:48px;margin-bottom:10px}
+
+/* SETTINGS MODAL */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:500;align-items:center;justify-content:center}
+.modal-bg.on{display:flex}
+.modal{background:white;border-radius:var(--r);padding:28px;width:460px;max-width:95vw}
+.modal h3{color:var(--brown-dark);font-size:16px;font-weight:700;margin-bottom:16px}
+.modal label{margin-bottom:6px;display:block}
+.modal small{color:var(--text-muted);font-size:11px;margin-top:4px;display:block}
+.modal-footer{display:flex;gap:10px;margin-top:20px}
+
+@media(max-width:680px){
+  .form-row,.analysis-grid,.orc-grid,.copy-grid,.foto-row{grid-template-columns:1fr}
+  .match-inner{grid-template-columns:90px 1fr}
+  .match-right{display:none}
+  .page{padding:12px}
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div style="font-size:26px">🛋️</div>
+  <div style="flex:1">
+    <h1>Calculadora Imperial</h1>
+    <p>Estofados Imperial — Orçamento por foto</p>
+  </div>
+  <button class="settings-btn" onclick="toggleModal()">⚙️ API</button>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab active" onclick="goTab('nova')" id="tab-nova">📸 Nova Análise</div>
+  <div class="tab" onclick="goTab('orcamento')" id="tab-orcamento">
+    📋 Orçamento<span class="dot" id="dot-orc"></span>
+  </div>
+  <div class="tab" onclick="goTab('busca')" id="tab-busca">🔍 Histórico</div>
+</div>
+
+<!-- ═══════════════════ NOVA ANÁLISE ═══════════════════ -->
+<div class="page active" id="page-nova">
+
+  <div class="card">
+    <div class="card-title">📋 Dados do Cliente</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nome do Cliente</label>
+        <input type="text" id="cliente" placeholder="Ex: Maria Santos" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label>Tipo de Peça</label>
+        <select id="tipo">
+          <option>SOFÁ TRÊS MÓDULOS</option><option>SOFÁ DOIS MÓDULOS</option>
+          <option>SOFÁ UM LUGAR</option><option>GRANDE/CANTO</option>
+          <option>SOFÁ CURVO</option><option>DIVÃ</option>
+          <option>POLTRONA NORMAL</option><option>POLTRONA GRANDE</option>
+          <option>POLTRONA RECLINÁVEL</option><option>CADEIRA JANTAR</option>
+          <option>PUFF</option><option>CABECEIRA</option>
+          <option>BANQUETAS</option><option>BOX</option>
+          <option>CANTO ALEMÃO</option><option>ÁREA EXTERNA</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="cardUpload">
+    <div class="card-title">📷 Foto do Sofá do Cliente</div>
+    <div class="upload-zone" id="uploadZone">
+      <div class="icon">📁</div>
+      <div class="txt">Arraste a foto do sofá aqui</div>
+      <div class="hint">ou clique para selecionar — JPG, PNG</div>
+    </div>
+    <input type="file" id="fileInput" accept="image/*">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px">
+      <button class="btn btn-primary" id="btnAnalise" disabled onclick="analisar()">🔍 Analisar e Buscar Matches</button>
+      <button class="btn btn-outline" onclick="limpar()">Limpar</button>
+    </div>
+  </div>
+
+  <!-- RESULTADO -->
+  <div id="resultado" style="display:none">
+    <div class="analysis-grid">
+
+      <!-- esquerdo: foto cliente + análise -->
+      <div>
+        <div class="card">
+          <div class="card-title">📸 Foto Enviada</div>
+          <div class="photo-panel">
+            <img id="fotoCliente" src="" alt="">
+            <div class="photo-tag">CLIENTE</div>
+          </div>
+          <div class="filename" id="fotoNome"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">🤖 Estrutura Identificada</div>
+          <div id="visionBadges" class="vision-badges"></div>
+          <p id="visionDesc" style="font-size:12px;color:var(--text-muted);font-style:italic"></p>
+        </div>
+      </div>
+
+      <!-- direito: matches com foto histórica -->
+      <div>
+        <div class="card">
+          <div class="card-title">🎯 Referências Históricas</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+            Clique em <strong>"Usar esta"</strong> para abrir o orçamento pré-preenchido.
+          </p>
+          <div id="matchCards"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ ORÇAMENTO ═══════════════════ -->
+<div class="page" id="page-orcamento">
+  <div id="semOrcamento" class="empty">
+    <div class="ic">📋</div>
+    <p>Selecione uma referência na aba <strong>Nova Análise</strong> para gerar o orçamento.</p>
+  </div>
+
+  <div id="orcContent" style="display:none">
+    <div class="orc-grid">
+
+      <!-- COLUNA ESQUERDA: referência selecionada -->
+      <div class="ref-card">
+        <div class="card">
+          <div class="card-title">📌 Referência Usada</div>
+          <div class="ref-photo-wrap">
+            <img id="refFoto" src="" alt="" style="display:none">
+            <div id="refFotoEmpty" class="ref-photo-empty">
+              <span style="font-size:36px">🛋️</span>
+              <span style="margin-top:8px">Sem foto no banco</span>
+            </div>
+            <div class="ref-tag" id="refTag"></div>
+          </div>
+          <div class="ref-info-row"><span class="lbl">Similaridade</span><span class="val" id="refPct">—</span></div>
+          <div class="ref-info-row"><span class="lbl">Encosto</span><span class="val" id="refEncosto">—</span></div>
+          <div class="ref-info-row"><span class="lbl">Assento</span><span class="val" id="refAssento">—</span></div>
+          <div class="ref-info-row"><span class="lbl">Braço</span><span class="val" id="refBraco">—</span></div>
+          <div class="ref-info-row"><span class="lbl">Tecido (ref.)</span><span class="val" id="refTecido">—</span></div>
+          <div class="ref-info-row"><span class="lbl">Horas (ref.)</span><span class="val" id="refHoras">—</span></div>
+        </div>
+      </div>
+
+      <!-- COLUNA DIREITA: formulário editável -->
+      <div>
+        <div class="card">
+          <div class="card-title">👤 Cliente</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Nome</label>
+              <input type="text" id="orcCliente" placeholder="Nome do cliente">
+            </div>
+            <div class="form-group">
+              <label>Tipo de Peça</label>
+              <input type="text" id="orcTipo" placeholder="Ex: Sofá Três Módulos">
+            </div>
+          </div>
+        </div>
+
+        <!-- MATERIAIS -->
+        <div class="card">
+          <div class="card-title">🧵 Materiais</div>
+          <table class="orc-table" id="tblMateriais">
+            <thead><tr><th>Material</th><th>Qtd</th><th>Unid</th><th>R$/unid</th><th>Total</th><th></th></tr></thead>
+            <tbody id="matBody"></tbody>
+          </table>
+          <button class="add-row-btn" onclick="addMaterial()">＋ Adicionar material</button>
+        </div>
+
+        <!-- MÃO DE OBRA -->
+        <div class="card">
+          <div class="card-title">⏱️ Mão de Obra</div>
+          <table class="orc-table" id="tblHoras">
+            <thead><tr><th>Pessoa</th><th>Horas</th><th>R$/hora</th><th>Total</th><th></th></tr></thead>
+            <tbody id="horasBody"></tbody>
+          </table>
+          <button class="add-row-btn" onclick="addHora()">＋ Adicionar pessoa</button>
+        </div>
+
+        <!-- TOTAIS -->
+        <div class="card">
+          <div class="card-title">💰 Totais</div>
+          <div class="totais-box">
+            <div class="totais-row"><span class="lbl">Subtotal Materiais</span><span id="subMat">R$ 0</span></div>
+            <div class="totais-row"><span class="lbl">Subtotal Mão de Obra</span><span id="subHoras">R$ 0</span></div>
+            <div class="totais-row"><span class="lbl">Custo Total</span><span id="subTotal">R$ 0</span></div>
+            <div class="margem-row">
+              <label>Margem</label>
+              <input type="number" id="margem" value="30" min="0" max="100" oninput="recalcular()" style="width:70px">
+              <span style="font-size:13px;color:var(--text-muted)">%</span>
+              <span style="margin-left:auto;font-size:13px;color:var(--text-muted)">+ <span id="valorMargem">R$ 0</span></span>
+            </div>
+            <div class="totais-row"><span>PREÇO SUGERIDO</span><span id="totalFinal" style="font-size:22px">R$ 0</span></div>
+          </div>
+
+          <div class="copy-grid">
+            <button class="btn btn-success" onclick="copiarWhatsApp()">📱 Copiar para WhatsApp</button>
+            <button class="btn btn-outline" onclick="copiarCompleto()">📄 Copiar Detalhes</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ HISTÓRICO ═══════════════════ -->
+<div class="page" id="page-busca">
+  <div class="card">
+    <div class="card-title">🔍 Buscar por Cliente</div>
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Nome do cliente..." onkeydown="if(event.key==='Enter')buscar()">
+      <button class="btn btn-primary" style="width:auto" onclick="buscar()">Buscar</button>
+      <button class="btn btn-outline" style="width:auto" onclick="buscarTodos()">Ver todos</button>
+    </div>
+    <div id="searchResults">
+      <div class="empty"><div class="ic">🔍</div><p>Digite o nome ou clique em <strong>Ver todos</strong></p></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ LOADING ═══════════════════ -->
+<div class="overlay" id="overlay">
+  <div class="loading-box">
+    <div class="spinner"></div>
+    <p>Analisando foto...</p>
+    <small>Claude Vision identificando estrutura do sofá</small>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<!-- SETTINGS MODAL -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3>⚙️ Configuração da API</h3>
+    <div class="form-group">
+      <label>URL do Backend</label>
+      <input type="text" id="apiUrlInput" placeholder="http://localhost:8767">
+      <small>Em produção: URL do Render.com/Railway. Localmente: http://localhost:8767</small>
+    </div>
+    <div class="form-group">
+      <label>Taxa Mão de Obra (R$/hora)</label>
+      <input type="number" id="taxaHoraInput" placeholder="50" value="50">
+      <small>Valor padrão por hora de trabalho para novos registros</small>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="salvarConfig()">Salvar</button>
+      <button class="btn btn-outline" onclick="toggleModal()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════ CONFIG ═══════════════
+let API = localStorage.getItem('imperial_api') || 'http://localhost:8767';
+let TAXA_HORA = parseFloat(localStorage.getItem('imperial_taxa_hora') || '50');
+
+function toggleModal() {
+  document.getElementById('apiUrlInput').value = API;
+  document.getElementById('taxaHoraInput').value = TAXA_HORA;
+  document.getElementById('modalBg').classList.toggle('on');
+}
+function salvarConfig() {
+  API = document.getElementById('apiUrlInput').value.trim().replace(/\/$/, '');
+  TAXA_HORA = parseFloat(document.getElementById('taxaHoraInput').value) || 50;
+  localStorage.setItem('imperial_api', API);
+  localStorage.setItem('imperial_taxa_hora', TAXA_HORA);
+  document.getElementById('modalBg').classList.remove('on');
+  toast('Configuração salva!', 'ok');
+}
+document.getElementById('modalBg').addEventListener('click', e => { if(e.target===e.currentTarget) toggleModal(); });
+
+// ═══════════════ TABS ═══════════════
+function goTab(name) {
+  ['nova','orcamento','busca'].forEach(n => {
+    document.getElementById('tab-'+n).classList.toggle('active', n===name);
+    document.getElementById('page-'+n).classList.toggle('active', n===name);
+  });
+}
+
+// ═══════════════ UPLOAD ═══════════════
+let selFile = null;
+const zone = document.getElementById('uploadZone');
+const fi   = document.getElementById('fileInput');
+
+zone.onclick = () => fi.click();
+zone.ondragover = e => { e.preventDefault(); zone.classList.add('over'); };
+zone.ondragleave = () => zone.classList.remove('over');
+zone.ondrop = e => { e.preventDefault(); zone.classList.remove('over'); if(e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); };
+fi.onchange = e => { if(e.target.files[0]) setFile(e.target.files[0]); };
+
+function setFile(f) {
+  selFile = f;
+  document.getElementById('btnAnalise').disabled = false;
+  const r = new FileReader();
+  r.onload = e => {
+    zone.innerHTML = `<img src="${e.target.result}" style="max-height:180px;border-radius:8px;max-width:100%"><div style="font-size:11px;color:var(--text-muted);margin-top:6px">${f.name}</div>`;
+  };
+  r.readAsDataURL(f);
+}
+
+function limpar() {
+  selFile = null;
+  fi.value = '';
+  document.getElementById('btnAnalise').disabled = true;
+  zone.innerHTML = `<div class="icon">📁</div><div class="txt">Arraste a foto do sofá aqui</div><div class="hint">ou clique para selecionar — JPG, PNG</div>`;
+  document.getElementById('resultado').style.display = 'none';
+}
+
+// ═══════════════ ANÁLISE ═══════════════
+let lastAnalysis = null;
+
+async function analisar() {
+  if (!selFile) return;
+  document.getElementById('overlay').classList.add('on');
+  try {
+    const fd = new FormData();
+    fd.append('file', selFile);
+    const res = await fetch(`${API}/matching/analisar-completo?top_n=3`, { method:'POST', body:fd });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    lastAnalysis = await res.json();
+
+    // salvar projeto
+    const pr = await fetch(`${API}/projetos/`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        nome: document.getElementById('tipo').value,
+        cliente: document.getElementById('cliente').value || 'Cliente',
+        mes_entrega: 'MAIO', ano_entrega: 2026,
+        trello_card_id: `card_${Date.now()}`,
+        observacoes: JSON.stringify(lastAnalysis.analise_foto)
+      })
+    });
+    lastAnalysis.projeto = await pr.json();
+
+    renderResultado();
+    document.getElementById('resultado').style.display = 'block';
+    toast(`✓ ${lastAnalysis.matches_encontrados} referências encontradas`, 'ok');
+  } catch(e) {
+    toast(`Erro: ${e.message}`, 'err');
+  } finally {
+    document.getElementById('overlay').classList.remove('on');
+  }
+}
+
+function renderResultado() {
+  // foto cliente
+  const r = new FileReader();
+  r.onload = e => { document.getElementById('fotoCliente').src = e.target.result; };
+  r.readAsDataURL(selFile);
+  document.getElementById('fotoNome').textContent = selFile.name;
+
+  // vision badges
+  const a = lastAnalysis.analise_foto;
+  const tipos = {
+    capitone_diagonal:'Capitonê diagonal', duas_almofadas:'Duas almofadas',
+    gomos_verticais:'Gomos verticais', capitone_quadrado:'Capitonê quadrado',
+    liso:'Liso', ondas_gomos:'Ondas/gomos', lisa_costura:'Lisa c/ costura',
+    quadrado_boxy:'Boxy quadrado', reto_costura:'Reto c/ costura',
+    aluminio:'Alumínio', sem_braco:'Sem braço'
+  };
+  const fmt = v => tipos[v] || v || '?';
+
+  document.getElementById('visionBadges').innerHTML = [
+    `<span class="badge"><span>Encosto: </span>${fmt(a.encosto)}</span>`,
+    `<span class="badge"><span>Assento: </span>${fmt(a.assento)}</span>`,
+    `<span class="badge"><span>Braço: </span>${fmt(a.braco)}</span>`,
+    `<span class="badge"><span>Módulos: </span>${a.modulos||'?'}</span>`,
+    a.confianca ? `<span class="badge"><span>Confiança: </span>${a.confianca}</span>` : '',
+    a.modo ? `<span class="badge" style="background:#FFF3CD;border-color:#FFC107;color:#856404">⚠️ Modo demo</span>` : ''
+  ].join('');
+  document.getElementById('visionDesc').textContent = a.descricao_resumida || '';
+
+  // match cards com foto histórica
+  const el = document.getElementById('matchCards');
+  el.innerHTML = '';
+  (lastAnalysis.top_matches || []).forEach((m, i) => {
+    const pct = m.similaridade_pct;
+    const cor = pct>=80 ? '#2D6A4F' : pct>=60 ? '#856404' : '#991B1B';
+    const hasFoto = m.foto_url && !m.foto_url.includes('exemplo.com');
+
+    el.innerHTML += `
+    <div class="match-card" id="mc${i}" onclick="selecionarMatch(${i})">
+      <div class="match-inner">
+        ${hasFoto
+          ? `<img class="match-photo" src="${m.foto_url}" alt="Ref ${i+1}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+          : ''
+        }
+        <div class="match-photo-empty" ${hasFoto ? 'style="display:none"' : ''}>
+          <div class="ico">🛋️</div>
+          <div>${fmt(m.encosto)}</div>
+        </div>
+        <div class="match-body">
+          <h4>${m.categoria || 'Referência ' + (i+1)}</h4>
+          <div class="match-meta">
+            <span class="meta"><b>${m.m_tecido}m</b> tecido</span>
+            <span class="meta"><b>${m.horas_totais}h</b> trabalho</span>
+            <span class="meta">Enc: ${fmt(m.encosto)}</span>
+            <span class="meta">Ass: ${fmt(m.assento)}</span>
+            <span class="meta">Braço: ${fmt(m.braco)}</span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="selecionarMatch(${i}); event.stopPropagation()">
+            Usar esta referência →
+          </button>
+        </div>
+        <div class="match-right">
+          <div class="pct-label">similaridade</div>
+          <div class="pct-big" style="color:${cor}">${pct}%</div>
+          <div class="price-hist">R$ ${Number(m.custo_historico||0).toLocaleString('pt-BR')}<span>custo histórico</span></div>
+        </div>
+      </div>
+    </div>`;
+  });
+}
+
+// ═══════════════ SELECIONAR MATCH → ORÇAMENTO ═══════════════
+function selecionarMatch(idx) {
+  document.querySelectorAll('.match-card').forEach(c => c.classList.remove('selected'));
+  document.getElementById(`mc${idx}`).classList.add('selected');
+  preencherOrcamento(idx);
+  document.getElementById('dot-orc').classList.add('show');
+  goTab('orcamento');
+  toast('Referência selecionada — orçamento pré-preenchido ✓', 'ok');
+}
+
+function preencherOrcamento(idx) {
+  const m = lastAnalysis.top_matches[idx];
+  const tipos = {
+    capitone_diagonal:'Capitonê diagonal', duas_almofadas:'Duas almofadas',
+    gomos_verticais:'Gomos verticais', capitone_quadrado:'Capitonê quadrado',
+    liso:'Liso', ondas_gomos:'Ondas/gomos', lisa_costura:'Lisa c/ costura',
+    quadrado_boxy:'Boxy quadrado', reto_costura:'Reto c/ costura',
+    aluminio:'Alumínio', sem_braco:'Sem braço'
+  };
+  const fmt = v => tipos[v] || v || '?';
+
+  // Foto referência
+  const hasFoto = m.foto_url && !m.foto_url.includes('exemplo.com');
+  const ri = document.getElementById('refFoto');
+  const re = document.getElementById('refFotoEmpty');
+  if (hasFoto) {
+    ri.src = m.foto_url; ri.style.display = 'block'; re.style.display = 'none';
+  } else {
+    ri.style.display = 'none'; re.style.display = 'flex';
+  }
+  document.getElementById('refTag').textContent = `${m.similaridade_pct}% de similaridade`;
+  document.getElementById('refPct').textContent = `${m.similaridade_pct}%`;
+  document.getElementById('refEncosto').textContent = fmt(m.encosto);
+  document.getElementById('refAssento').textContent = fmt(m.assento);
+  document.getElementById('refBraco').textContent = fmt(m.braco);
+  document.getElementById('refTecido').textContent = `${m.m_tecido} m`;
+  document.getElementById('refHoras').textContent = `${m.horas_totais} h`;
+
+  // Cliente
+  document.getElementById('orcCliente').value = document.getElementById('cliente').value || '';
+  document.getElementById('orcTipo').value = document.getElementById('tipo').value || m.categoria || '';
+
+  // Materiais pré-preenchidos
+  const matBody = document.getElementById('matBody');
+  matBody.innerHTML = '';
+  addMatRow('Tecido', m.m_tecido || 17, 'MT', 26);
+  addMatRow('Espuma D33 5cm', 1, 'UN', 280);
+  addMatRow('Percinta elástica', 1, 'UN', 80);
+  addMatRow('Zíperes e acessórios', 1, 'UN', 20);
+
+  // Horas pré-preenchidas
+  const horasBody = document.getElementById('horasBody');
+  horasBody.innerHTML = '';
+  const h = m.horas_totais || 32;
+  addHoraRow('JOEL', Math.round(h * 0.6), TAXA_HORA);
+  addHoraRow('DOUGLAS', Math.round(h * 0.4), TAXA_HORA);
+
+  recalcular();
+
+  document.getElementById('semOrcamento').style.display = 'none';
+  document.getElementById('orcContent').style.display = 'block';
+}
+
+// ═══════════════ TABELAS EDITÁVEIS ═══════════════
+function addMatRow(nome='', qtd=1, unid='MT', preco=0) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" value="${nome}" style="min-width:120px" oninput="recalcular()"></td>
+    <td><input type="number" value="${qtd}" min="0" step="0.1" oninput="recalcular()"></td>
+    <td><input type="text" value="${unid}" style="width:60px" oninput="recalcular()"></td>
+    <td><input type="number" value="${preco}" min="0" step="0.5" oninput="recalcular()"></td>
+    <td class="total-cell" data-total="0">R$ 0</td>
+    <td><button class="del-btn" onclick="this.closest('tr').remove(); recalcular()">×</button></td>
+  `;
+  document.getElementById('matBody').appendChild(tr);
+  recalcular();
+}
+
+function addMaterial() { addMatRow(); }
+
+function addHoraRow(pessoa='', horas=8, taxa=50) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" value="${pessoa}" oninput="recalcular()"></td>
+    <td><input type="number" value="${horas}" min="0" step="0.5" oninput="recalcular()"></td>
+    <td><input type="number" value="${taxa}" min="0" step="5" oninput="recalcular()"></td>
+    <td class="total-cell" data-total="0">R$ 0</td>
+    <td><button class="del-btn" onclick="this.closest('tr').remove(); recalcular()">×</button></td>
+  `;
+  document.getElementById('horasBody').appendChild(tr);
+  recalcular();
+}
+
+function addHora() { addHoraRow('', 8, TAXA_HORA); }
+
+function recalcular() {
+  let sumMat = 0;
+  document.querySelectorAll('#matBody tr').forEach(tr => {
+    const inps = tr.querySelectorAll('input[type=number]');
+    const qtd   = parseFloat(inps[0]?.value) || 0;
+    const preco = parseFloat(inps[1]?.value) || 0;
+    const t = qtd * preco;
+    sumMat += t;
+    const tc = tr.querySelector('.total-cell');
+    if (tc) tc.textContent = `R$ ${t.toLocaleString('pt-BR', {minimumFractionDigits:2})}`;
+  });
+
+  let sumHoras = 0;
+  document.querySelectorAll('#horasBody tr').forEach(tr => {
+    const inps = tr.querySelectorAll('input[type=number]');
+    const h = parseFloat(inps[0]?.value) || 0;
+    const t2 = parseFloat(inps[1]?.value) || 0;
+    const t = h * t2;
+    sumHoras += t;
+    const tc = tr.querySelector('.total-cell');
+    if (tc) tc.textContent = `R$ ${t.toLocaleString('pt-BR', {minimumFractionDigits:2})}`;
+  });
+
+  const margem = parseFloat(document.getElementById('margem').value) || 0;
+  const sub = sumMat + sumHoras;
+  const valorMarg = sub * (margem / 100);
+  const total = sub + valorMarg;
+
+  const fmt = v => `R$ ${v.toLocaleString('pt-BR', {minimumFractionDigits:2})}`;
+  document.getElementById('subMat').textContent    = fmt(sumMat);
+  document.getElementById('subHoras').textContent  = fmt(sumHoras);
+  document.getElementById('subTotal').textContent  = fmt(sub);
+  document.getElementById('valorMargem').textContent = fmt(valorMarg);
+  document.getElementById('totalFinal').textContent = fmt(total);
+}
+
+// ═══════════════ COPY ═══════════════
+function copiarWhatsApp() {
+  const cliente = document.getElementById('orcCliente').value || 'Cliente';
+  const tipo = document.getElementById('orcTipo').value;
+  const total = document.getElementById('totalFinal').textContent;
+  const txt = `Olá ${cliente}! 😊\n\nSegue orçamento para reforma do seu *${tipo}*:\n\n*${total}*\n\nQualquer dúvida, estamos à disposição!\n— Estofados Imperial`;
+  navigator.clipboard.writeText(txt).then(() => toast('✓ Copiado para área de transferência!', 'ok'));
+}
+
+function copiarCompleto() {
+  const cliente = document.getElementById('orcCliente').value || 'Cliente';
+  const tipo = document.getElementById('orcTipo').value;
+  const data = new Date().toLocaleDateString('pt-BR');
+  let txt = `ORÇAMENTO — ESTOFADOS IMPERIAL\nCliente: ${cliente}\nPeça: ${tipo}\nData: ${data}\n\n`;
+
+  txt += 'MATERIAIS:\n';
+  document.querySelectorAll('#matBody tr').forEach(tr => {
+    const inps = tr.querySelectorAll('input');
+    const nome = inps[0]?.value; const qtd = inps[1]?.value;
+    const unid = inps[2]?.value; const preco = inps[3]?.value;
+    const t = (parseFloat(qtd)||0) * (parseFloat(preco)||0);
+    txt += `  ${nome}: ${qtd} ${unid} × R$${preco} = R$${t.toFixed(2)}\n`;
+  });
+
+  txt += '\nMÃO DE OBRA:\n';
+  document.querySelectorAll('#horasBody tr').forEach(tr => {
+    const inps = tr.querySelectorAll('input');
+    const p = inps[0]?.value; const h = inps[1]?.value; const taxa = inps[2]?.value;
+    const t = (parseFloat(h)||0) * (parseFloat(taxa)||0);
+    txt += `  ${p}: ${h}h × R$${taxa}/h = R$${t.toFixed(2)}\n`;
+  });
+
+  txt += `\n${document.getElementById('subTotal').textContent} (custo)\n`;
+  txt += `Margem ${document.getElementById('margem').value}%: +${document.getElementById('valorMargem').textContent}\n`;
+  txt += `PREÇO SUGERIDO: ${document.getElementById('totalFinal').textContent}`;
+
+  navigator.clipboard.writeText(txt).then(() => toast('✓ Detalhes copiados!', 'ok'));
+}
+
+// ═══════════════ HISTÓRICO ═══════════════
+async function buscar() {
+  const t = document.getElementById('searchInput').value.trim();
+  await carregarProjetos(t ? `?cliente=${encodeURIComponent(t)}&limit=50` : '?limit=50');
+}
+async function buscarTodos() {
+  document.getElementById('searchInput').value = '';
+  await carregarProjetos('?limit=50');
+}
+
+async function carregarProjetos(query) {
+  const c = document.getElementById('searchResults');
+  c.innerHTML = `<div class="empty"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">Buscando...</p></div>`;
+  try {
+    const res = await fetch(`${API}/projetos/${query}`);
+    const data = await res.json();
+    if (!data.projetos?.length) {
+      c.innerHTML = `<div class="empty"><div class="ic">😕</div><p>Nenhum orçamento encontrado</p></div>`;
+      return;
+    }
+    c.innerHTML = `<p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">${data.total} registro(s) encontrado(s)</p>`;
+    data.projetos.forEach(p => c.insertAdjacentHTML('beforeend', renderHistCard(p)));
+  } catch(e) {
+    c.innerHTML = `<div class="empty"><p>Erro: ${e.message}</p></div>`;
+  }
+}
+
+function renderHistCard(p) {
+  const dt = new Date(p.data_criacao).toLocaleDateString('pt-BR');
+  const mats = (p.materiais||[]).map(m => `<tr><td>${m.nome}</td><td>${m.quantidade} ${m.unidade}</td><td>${m.observacoes||'—'}</td></tr>`).join('') || '<tr><td colspan="3" style="color:var(--text-muted)">Sem materiais</td></tr>';
+  const hrs  = (p.horas_trabalho||[]).map(h => `<tr><td>${h.pessoa}</td><td>${h.horas}h</td><td>${h.descricao||'—'}</td></tr>`).join('') || '<tr><td colspan="3" style="color:var(--text-muted)">Sem horas</td></tr>';
+  const fa = p.foto_antes ? `<img src="${p.foto_antes}" alt="Antes">` : `<div class="nf">📷<br>Sem foto antes</div>`;
+  const fd = p.foto_depois ? `<img src="${p.foto_depois}" alt="Depois">` : `<div class="nf">📷<br>Sem foto depois</div>`;
+  return `
+  <div class="hist-card">
+    <div class="hist-head" onclick="toggleHist(this)">
+      <div>
+        <h3>${p.nome} — ${p.cliente}</h3>
+        <div class="sub">${dt} · ${p.mes_entrega} ${p.ano_entrega} · ${p.total_horas}h · ID: ${p.id}</div>
+      </div>
+      <span class="chev">▾</span>
+    </div>
+    <div class="hist-body">
+      <div class="kpi-row">
+        <div class="kpi"><div class="kl">Total Horas</div><div class="kv">${p.total_horas}<small style="font-size:13px;font-weight:400">h</small></div></div>
+        <div class="kpi"><div class="kl">Materiais</div><div class="kv">${(p.materiais||[]).length}<small style="font-size:13px;font-weight:400"> itens</small></div></div>
+        <div class="kpi"><div class="kl">Entrega</div><div class="kv" style="font-size:15px">${p.mes_entrega} ${p.ano_entrega}</div></div>
+        ${p.comparacao?.valor_orcado ? `<div class="kpi"><div class="kl">Orçado</div><div class="kv" style="font-size:15px">R$ ${Number(p.comparacao.valor_orcado).toLocaleString('pt-BR')}</div></div>` : ''}
+      </div>
+      <div class="foto-row">
+        <div class="foto-box">${fa}<span class="foto-tag">ANTES</span></div>
+        <div class="foto-box">${fd}<span class="foto-tag">DEPOIS</span></div>
+      </div>
+      <div class="tbl-title">🧵 Materiais</div>
+      <table><thead><tr><th>Material</th><th>Qtd</th><th>Obs</th></tr></thead><tbody>${mats}</tbody></table>
+      <div class="tbl-title">⏱️ Horas</div>
+      <table><thead><tr><th>Pessoa</th><th>Horas</th><th>Descrição</th></tr></thead><tbody>${hrs}</tbody></table>
+      ${p.observacoes ? `<div style="margin-top:14px;font-size:12px;color:var(--text-muted);background:var(--cream);padding:10px;border-radius:8px"><b>Obs:</b> ${p.observacoes}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function toggleHist(h) {
+  h.classList.toggle('open');
+  h.nextElementSibling.classList.toggle('open');
+}
+
+// ═══════════════ TOAST ═══════════════
+function toast(msg, type='ok') {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = `toast on ${type}`;
+  setTimeout(() => t.classList.remove('on'), 3500);
+}
+</script>
+</body>
+</html>
