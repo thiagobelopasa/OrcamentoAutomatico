@@ -63,43 +63,72 @@ class TrelloSync:
         anexos = await self.obter_anexos_card(card_id)
 
         # Filtra apenas anexos criados após 'desde'
+        from datetime import timezone
+        # normaliza desde para UTC-aware
+        if desde.tzinfo is None:
+            desde = desde.replace(tzinfo=timezone.utc)
+
         novos = []
         for anexo in anexos:
-            # Trello retorna date no formato ISO
             date_str = anexo.get('date', '')
             try:
                 date_anexo = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                 if date_anexo > desde:
                     novos.append(anexo)
             except (ValueError, AttributeError):
-                # Se não conseguir parsear, inclui por segurança
                 novos.append(anexo)
 
         return novos
 
-    async def sincronizar_tudo(self) -> Dict[str, Any]:
-        """Sincroniza todos os cards e anexos do board"""
-        cards = await self.obter_cards()
+    @staticmethod
+    def _lista_e_entrega(nome: str) -> bool:
+        """Retorna True se a lista for do tipo ENTREGA MÊS ANO."""
+        import re
+        return bool(re.match(r'^ENTREGA\s+\w+\s+\d{4}$', nome.strip(), re.IGNORECASE))
+
+    async def sincronizar_tudo(self, apenas_entrega: bool = True) -> Dict[str, Any]:
+        """
+        Sincroniza cards do board.
+        Com apenas_entrega=True (padrão), importa só das listas 'ENTREGA MÊS ANO'.
+        """
+        listas = await self.obter_listas()
+
+        if apenas_entrega:
+            listas_alvo = [l for l in listas if self._lista_e_entrega(l['name'])]
+        else:
+            listas_alvo = listas
 
         resultado = {
             'timestamp': datetime.now().isoformat(),
-            'total_cards': len(cards),
+            'listas_importadas': [l['name'] for l in listas_alvo],
+            'total_listas': len(listas_alvo),
+            'total_cards': 0,
             'cards': []
         }
 
-        for card in cards:
-            anexos = await self.obter_anexos_card(card['id'])
+        for lista in listas_alvo:
+            # extrai mês e ano do nome da lista (ex: "ENTREGA MAIO 2026")
+            parts = lista['name'].split()
+            mes_lista = parts[1] if len(parts) > 1 else 'INDEFINIDO'
+            ano_lista = parts[2] if len(parts) > 2 else str(datetime.now().year)
 
-            card_data = {
-                'id': card['id'],
-                'name': card['name'],
-                'url': card.get('url'),
-                'desc': card.get('desc', ''),
-                'anexos': anexos,
-                'ultima_atualizacao': card.get('dateLastActivity', ''),
-                'labels': [label.get('name', '') for label in card.get('labels', [])]
-            }
-            resultado['cards'].append(card_data)
+            cards = await self.obter_cards(lista['id'])
+            resultado['total_cards'] += len(cards)
+
+            for card in cards:
+                anexos = await self.obter_anexos_card(card['id'])
+                card_data = {
+                    'id': card['id'],
+                    'name': card['name'],
+                    'lista_nome': lista['name'],
+                    'mes_entrega': mes_lista.upper(),
+                    'ano_entrega': int(ano_lista) if ano_lista.isdigit() else datetime.now().year,
+                    'url': card.get('url'),
+                    'desc': card.get('desc', ''),
+                    'anexos': anexos,
+                    'labels': [lb.get('name', '') for lb in card.get('labels', [])]
+                }
+                resultado['cards'].append(card_data)
 
         return resultado
 

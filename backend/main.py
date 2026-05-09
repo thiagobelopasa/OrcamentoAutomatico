@@ -3,10 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
 
-from routers import projetos
+from routers import projetos, matching
 from database import init_db
 
-# Carrega variáveis de ambiente
+# Carrega variáveis de ambiente (.env.local tem prioridade)
+load_dotenv(".env.local", override=True)
 load_dotenv()
 
 # Inicializa banco de dados
@@ -31,6 +32,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(projetos.router)
+app.include_router(matching.router)
 
 @app.get("/health")
 def health():

@@ -269,6 +269,100 @@ async def sincronizar_projetos_trello(
         raise HTTPException(status_code=400,
                           detail=f"Erro ao sincronizar Trello: {str(e)}")
 
+@router.post("/sincronizar-trello-completo")
+async def sincronizar_trello_completo(
+    api_key: Optional[str] = None,
+    api_token: Optional[str] = None,
+    board_id: Optional[str] = None,
+    limpar_anteriores: bool = False,
+    db: Session = Depends(get_db)
+) -> dict:
+    """
+    Importa cards APENAS das listas 'ENTREGA MÊS ANO' do Trello.
+    Cada card = 1 cliente/serviço. Preserva mês/ano da lista.
+    """
+    if not api_key: api_key = os.getenv("TRELLO_API_KEY")
+    if not api_token: api_token = os.getenv("TRELLO_API_TOKEN")
+    if not board_id: board_id = os.getenv("TRELLO_BOARD_ID")
+
+    if not all([api_key, api_token, board_id]):
+        raise HTTPException(status_code=400, detail="Credenciais Trello não configuradas")
+
+    try:
+        sync = criar_sync_trello(api_key, api_token, board_id)
+        # apenas_entrega=True: só listas "ENTREGA MÊS ANO"
+        dados = await sync.sincronizar_tudo(apenas_entrega=True)
+
+        criados = 0
+        atualizados = 0
+        total_anexos = 0
+
+        for card in dados.get("cards", []):
+            card_id = card["id"]
+            db_projeto = ProjetosService.obter_por_trello_card(db, card_id)
+
+            # separa fotos de fichas de produção
+            anexos = card.get("anexos", [])
+            urls_fotos = []
+            urls_fichas = []
+            for a in anexos:
+                url = a.get("url", "")
+                if not url:
+                    continue
+                nome = (a.get("name", "") or "").lower()
+                # Detecta ficha/OS por nome do arquivo ou extensão
+                if any(x in nome for x in ["os", "ficha", "ordem", "producao", "orcamento"]):
+                    urls_fichas.append(url)
+                else:
+                    urls_fotos.append(url)
+                total_anexos += 1
+
+            # se não separou, coloca tudo em urls_fotos
+            if not urls_fichas:
+                urls_fotos = [a.get("url") for a in anexos if a.get("url")]
+
+            if not db_projeto:
+                novo = Projeto(
+                    nome=card["name"],
+                    cliente=card["name"],
+                    mes_entrega=card.get("mes_entrega", "INDEFINIDO"),
+                    ano_entrega=card.get("ano_entrega", datetime.now().year),
+                    trello_card_id=card_id,
+                    trello_card_url=card.get("url"),
+                    descricao=card.get("desc", ""),
+                    urls_anexos=urls_fotos,
+                    observacoes=f"Fichas OS: {','.join(urls_fichas)}" if urls_fichas else None
+                )
+                ProjetosService.criar_projeto(db, novo)
+                criados += 1
+            else:
+                temp = list(db_projeto.urls_anexos or [])
+                for u in urls_fotos:
+                    if u not in temp:
+                        temp.append(u)
+                db_projeto.urls_anexos = temp
+                db_projeto.mes_entrega = card.get("mes_entrega", db_projeto.mes_entrega)
+                db_projeto.ano_entrega = card.get("ano_entrega", db_projeto.ano_entrega)
+                db_projeto.data_atualizacao = datetime.now()
+                db.commit()
+                atualizados += 1
+
+        await sync.fechar()
+
+        return {
+            "sucesso": True,
+            "listas_importadas": dados.get("listas_importadas", []),
+            "total_listas": dados.get("total_listas", 0),
+            "total_cards": dados["total_cards"],
+            "projetos_criados": criados,
+            "projetos_atualizados": atualizados,
+            "total_anexos_importados": total_anexos
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Erro ao sincronizar Trello: {str(e)}")
+
+
 @router.post("/{projeto_id}/comparacao")
 async def atualizar_comparacao(projeto_id: str, comparacao: OrcamentoVsRealidade, db: Session = Depends(get_db)) -> dict:
     """Atualiza ou cria comparação orçado vs real"""

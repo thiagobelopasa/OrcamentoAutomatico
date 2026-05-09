@@ -432,8 +432,8 @@ table tr:last-child td{border-bottom:none}
     <h3>⚙️ Configuração da API</h3>
     <div class="form-group">
       <label>URL do Backend</label>
-      <input type="text" id="apiUrlInput" placeholder="http://localhost:8767">
-      <small>Em produção: URL do Render.com/Railway. Localmente: http://localhost:8767</small>
+      <input type="text" id="apiUrlInput" placeholder="http://localhost:8771">
+      <small>Em produção: URL do Render.com/Railway. Localmente: http://localhost:8771</small>
     </div>
     <div class="form-group">
       <label>Taxa Mão de Obra (R$/hora)</label>
@@ -449,7 +449,7 @@ table tr:last-child td{border-bottom:none}
 
 <script>
 // ═══════════════ CONFIG ═══════════════
-let API = localStorage.getItem('imperial_api') || 'http://localhost:8767';
+let API = localStorage.getItem('imperial_api') || 'http://localhost:8771';
 let TAXA_HORA = parseFloat(localStorage.getItem('imperial_taxa_hora') || '50');
 
 function toggleModal() {
@@ -568,42 +568,59 @@ function renderResultado() {
   ].join('');
   document.getElementById('visionDesc').textContent = a.descricao_resumida || '';
 
+  // Rodapé: total no banco
+  const totalBanco = lastAnalysis.total_no_banco || 0;
+  const infoEl = document.querySelector('#matchCards')?.previousElementSibling;
+
   // match cards com foto histórica
   const el = document.getElementById('matchCards');
   el.innerHTML = '';
+  if (totalBanco > 0) {
+    el.insertAdjacentHTML('beforebegin',
+      `<p style="font-size:11px;color:var(--text-muted);margin-bottom:10px">🗂️ Buscando em <b>${totalBanco}</b> projetos reais do histórico Trello</p>`
+    );
+  }
   (lastAnalysis.top_matches || []).forEach((m, i) => {
     const pct = m.similaridade_pct;
     const cor = pct>=80 ? '#2D6A4F' : pct>=60 ? '#856404' : '#991B1B';
+    // Usa proxy para imagens do Trello; ignora URLs de exemplo
     const hasFoto = m.foto_url && !m.foto_url.includes('exemplo.com');
+    const fotoSrc = hasFoto && m.foto_url.includes('trello.com')
+      ? `${API}/matching/proxy/imagem?url=${encodeURIComponent(m.foto_url)}`
+      : (hasFoto ? m.foto_url : '');
+    const semEst = m.sem_estrutura;
+    const trelloLink = m.trello_card_url ? `<a href="${m.trello_card_url}" target="_blank" style="font-size:10px;color:var(--brown-light);text-decoration:none">↗ Ver no Trello</a>` : '';
+    const mesTag = m.mes_entrega ? `<span class="meta">${m.mes_entrega} ${m.ano_entrega||''}</span>` : '';
 
     el.innerHTML += `
     <div class="match-card" id="mc${i}" onclick="selecionarMatch(${i})">
       <div class="match-inner">
-        ${hasFoto
-          ? `<img class="match-photo" src="${m.foto_url}" alt="Ref ${i+1}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        ${fotoSrc
+          ? `<img class="match-photo" src="${fotoSrc}" alt="Ref ${i+1}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
           : ''
         }
-        <div class="match-photo-empty" ${hasFoto ? 'style="display:none"' : ''}>
+        <div class="match-photo-empty" ${fotoSrc ? 'style="display:none"' : ''}>
           <div class="ico">🛋️</div>
           <div>${fmt(m.encosto)}</div>
         </div>
         <div class="match-body">
-          <h4>${m.categoria || 'Referência ' + (i+1)}</h4>
+          <h4 style="font-size:12px">${m.categoria || 'Referência ' + (i+1)}</h4>
           <div class="match-meta">
             <span class="meta"><b>${m.m_tecido}m</b> tecido</span>
             <span class="meta"><b>${m.horas_totais}h</b> trabalho</span>
-            <span class="meta">Enc: ${fmt(m.encosto)}</span>
-            <span class="meta">Ass: ${fmt(m.assento)}</span>
-            <span class="meta">Braço: ${fmt(m.braco)}</span>
+            ${!semEst ? `<span class="meta">Enc: ${fmt(m.encosto)}</span><span class="meta">Ass: ${fmt(m.assento)}</span>` : ''}
+            ${mesTag}
           </div>
-          <button class="btn btn-primary btn-sm" onclick="selecionarMatch(${i}); event.stopPropagation()">
-            Usar esta referência →
-          </button>
+          ${semEst ? `<p style="font-size:10px;color:var(--text-muted);margin-bottom:6px">⚠️ Sem análise estrutural ainda</p>` : ''}
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary btn-sm" onclick="selecionarMatch(${i}); event.stopPropagation()">Usar esta →</button>
+            ${trelloLink}
+          </div>
         </div>
         <div class="match-right">
           <div class="pct-label">similaridade</div>
           <div class="pct-big" style="color:${cor}">${pct}%</div>
-          <div class="price-hist">R$ ${Number(m.custo_historico||0).toLocaleString('pt-BR')}<span>custo histórico</span></div>
+          ${m.custo_historico ? `<div class="price-hist">R$ ${Number(m.custo_historico).toLocaleString('pt-BR')}<span>custo histórico</span></div>` : ''}
         </div>
       </div>
     </div>`;
@@ -631,12 +648,15 @@ function preencherOrcamento(idx) {
   };
   const fmt = v => tipos[v] || v || '?';
 
-  // Foto referência
+  // Foto referência (com proxy para Trello)
   const hasFoto = m.foto_url && !m.foto_url.includes('exemplo.com');
   const ri = document.getElementById('refFoto');
   const re = document.getElementById('refFotoEmpty');
   if (hasFoto) {
-    ri.src = m.foto_url; ri.style.display = 'block'; re.style.display = 'none';
+    ri.src = m.foto_url && m.foto_url.includes('trello.com')
+      ? `${API}/matching/proxy/imagem?url=${encodeURIComponent(m.foto_url)}`
+      : m.foto_url;
+    ri.style.display = 'block'; re.style.display = 'none';
   } else {
     ri.style.display = 'none'; re.style.display = 'flex';
   }
