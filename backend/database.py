@@ -60,6 +60,7 @@ class ProjetoORM(Base):
     data_atualizacao = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     trello_card_id = Column(String, unique=True, nullable=True)
     trello_card_url = Column(String, nullable=True)
+    drive_file_id = Column(String, unique=True, nullable=True)
     ultimo_anexo_coletado = Column(DateTime, nullable=True)
 
     # Relacionamentos
@@ -131,11 +132,12 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     # Migração: adiciona visao_fotos se o banco já existia sem ela
     with engine.connect() as conn:
-        try:
-            conn.execute(text("ALTER TABLE projetos ADD COLUMN visao_fotos JSON"))
-            conn.commit()
-        except Exception:
-            pass  # coluna já existe
+        for col in ["visao_fotos JSON", "drive_file_id TEXT"]:
+            try:
+                conn.execute(text(f"ALTER TABLE projetos ADD COLUMN {col}"))
+                conn.commit()
+            except Exception:
+                pass  # coluna já existe
 
 
 def get_db():

@@ -15,4 +15,8 @@ services:
         sync: false
       - key: AUTO_SYNC_TRELLO
         value: "true"
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GOOGLE_DRIVE_FOLDER_ID
+        value: "16Lu60kXkRI_wN0V62d1RPN_4JtTEa_TE"
     healthCheckPath: /health

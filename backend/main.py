@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 _DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 
-from routers import projetos, matching
+from routers import projetos, matching, drive
 from database import init_db, SessionLocal, ProjetoORM
 
 # Carrega variáveis de ambiente (.env.local tem prioridade)
@@ -121,6 +121,7 @@ app.add_middleware(
 
 app.include_router(projetos.router)
 app.include_router(matching.router)
+app.include_router(drive.router)
 
 
 @app.get("/health")
