@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, JSON, ForeignKey
+from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, JSON, ForeignKey, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -51,6 +51,9 @@ class ProjetoORM(Base):
     # Observações
     descricao = Column(String, nullable=True)
     observacoes = Column(String, nullable=True)
+
+    # Análise Vision por foto: [{url, encosto, assento, braco, confianca}]
+    visao_fotos = Column(JSON, default=[])
 
     # Rastreabilidade
     data_criacao = Column(DateTime, default=datetime.now)
@@ -126,6 +129,13 @@ class AnaliseProjeto(Base):
 def init_db():
     """Inicializa o banco de dados (cria todas as tabelas)"""
     Base.metadata.create_all(bind=engine)
+    # Migração: adiciona visao_fotos se o banco já existia sem ela
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE projetos ADD COLUMN visao_fotos JSON"))
+            conn.commit()
+        except Exception:
+            pass  # coluna já existe
 
 
 def get_db():

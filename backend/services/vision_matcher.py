@@ -200,14 +200,29 @@ Responda APENAS com JSON, sem markdown.
                 "m_tecido": entrada.get("m_tecido"),
                 "horas_totais": entrada.get("horas_totais"),
                 "custo_historico": entrada.get("custo_historico"),
+                # foto_url aponta para a foto ESPECÍFICA que foi analisada via Vision
                 "foto_url": entrada.get("foto_antes_url"),
                 "encosto": entrada.get("estrutura_encosto"),
                 "assento": entrada.get("estrutura_assento"),
-                "braco": entrada.get("estrutura_braco")
+                "braco": entrada.get("estrutura_braco"),
+                "trello_card_url": entrada.get("trello_card_url"),
+                "mes_entrega": entrada.get("mes_entrega"),
+                "ano_entrega": entrada.get("ano_entrega"),
             })
 
         matches.sort(key=lambda x: x["similaridade_pct"], reverse=True)
-        return matches[:top_n]
+
+        # Deduplica por projeto (mantém só o melhor match por projeto)
+        seen_projects = set()
+        deduped = []
+        for m in matches:
+            pid = m["entrada_id"]
+            if pid not in seen_projects:
+                seen_projects.add(pid)
+                deduped.append(m)
+            if len(deduped) >= top_n:
+                break
+        return deduped
 
 
 # Banco histórico de exemplo (formato esperado no DB)
