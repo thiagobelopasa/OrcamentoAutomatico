@@ -4,7 +4,7 @@ O nome do arquivo codifica metragem e horas: "1,5mt - 2,75hr.jpeg"
 Funciona com pastas públicas sem precisar de API key (scraping fallback).
 """
 import re
-import json
+import asyncio
 import httpx
 from pathlib import Path
 from typing import Optional
@@ -144,61 +144,30 @@ def url_download_drive(file_id: str, api_key: str) -> str:
 async def listar_arquivos_drive_publico(folder_id: str) -> list[dict]:
     """
     Lista arquivos de imagem em pasta pública do Drive sem precisar de API key.
-    Faz scraping da página HTML do Drive, extraindo os dados embutidos pelo Google.
+    Usa embeddedfolderview (HTML server-rendered) com recursão em subpastas.
     Retorna lista de {id, name, mimeType}.
     """
-    url = f"https://drive.google.com/drive/folders/{folder_id}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
+    return await _listar_embeddedfolderview(folder_id, _depth=0)
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        resp = await client.get(url, headers=headers)
 
-    if resp.status_code != 200:
+# Padrão de ID do Drive (25–50 chars alfanuméricos)
+_ID_RE = re.compile(r'[A-Za-z0-9_-]{25,50}')
+
+# Padrão de entrada no embeddedfolderview:
+# <div class="flip-entry" id="entry-{ID}"> ... href="{HREF}" ... flip-entry-title>{NAME}<
+_ENTRY_RE = re.compile(
+    r'id="entry-([A-Za-z0-9_-]{25,50})".*?'
+    r'href="([^"]+)".*?'
+    r'class="flip-entry-title">([^<]+)<',
+    re.DOTALL
+)
+
+
+async def _listar_embeddedfolderview(folder_id: str, _depth: int = 0) -> list[dict]:
+    """Recursivo: lista arquivos de pasta pública via embeddedfolderview."""
+    if _depth > 3:
         return []
 
-    html = resp.text
-    arquivos = []
-    seen: set[str] = set()
-
-    # Método 1: padrão AF_initDataCallback com arrays de metadados de arquivo
-    # Google embute dados no formato: ["FILE_ID",null,"FILENAME.ext", ...]
-    # O file_id tem ~33 chars alfanuméricos (maiúsculas, minúsculas, _, -)
-    _ID_RE = r'[A-Za-z0-9_-]{25,50}'
-    pat1 = re.compile(
-        rf'\["({_ID_RE})",null,"([^"]+\.(?:jpe?g|png|webp|gif))"',
-        re.IGNORECASE
-    )
-    for file_id, name in pat1.findall(html):
-        if file_id not in seen:
-            seen.add(file_id)
-            arquivos.append({"id": file_id, "name": name, "mimeType": "image/jpeg"})
-
-    # Método 2: padrão "id":"FILE_ID","name":"FILENAME" em blocos JSON
-    if not arquivos:
-        pat2 = re.compile(
-            rf'"id"\s*:\s*"({_ID_RE})"\s*,\s*"name"\s*:\s*"([^"]+\.(?:jpe?g|png|webp|gif))"',
-            re.IGNORECASE
-        )
-        for file_id, name in pat2.findall(html):
-            if file_id not in seen:
-                seen.add(file_id)
-                arquivos.append({"id": file_id, "name": name, "mimeType": "image/jpeg"})
-
-    # Método 3: embeddedfolderview (HTML mais simples, lista paginada)
-    if not arquivos:
-        arquivos = await _listar_embeddedfolderview(folder_id)
-
-    return arquivos
-
-
-async def _listar_embeddedfolderview(folder_id: str) -> list[dict]:
-    """Fallback: usa embeddedfolderview para listar arquivos públicos."""
     url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
     headers = {
         "User-Agent": (
@@ -214,23 +183,27 @@ async def _listar_embeddedfolderview(folder_id: str) -> list[dict]:
         return []
 
     html = resp.text
-    arquivos = []
-    seen: set[str] = set()
+    arquivos: list[dict] = []
 
-    # O embeddedfolderview usa: <div data-id="FILE_ID" ... <span class="entry-title">NAME
-    _ID_RE = r'[A-Za-z0-9_-]{25,50}'
-    id_pat = re.compile(rf'data-id="({_ID_RE})"')
-    name_pat = re.compile(r'class="entry-title[^"]*">([^<]+)</span>')
+    for m in _ENTRY_RE.finditer(html):
+        entry_id = m.group(1)
+        href = m.group(2)
+        name = m.group(3).strip()
 
-    ids = id_pat.findall(html)
-    names = name_pat.findall(html)
-
-    for file_id, name in zip(ids, names):
-        name = name.strip()
-        ext = Path(name).suffix.lower()
-        if ext in _EXT_IMAGEM and file_id not in seen:
-            seen.add(file_id)
-            arquivos.append({"id": file_id, "name": name, "mimeType": "image/jpeg"})
+        if "/drive/folders/" in href:
+            # É uma subpasta — recursão
+            sub = await _listar_embeddedfolderview(entry_id, _depth + 1)
+            arquivos.extend(sub)
+            await asyncio.sleep(0.3)  # respeita rate do Drive
+        else:
+            # É um arquivo — aceita só imagens
+            ext = Path(name).suffix.lower()
+            if ext in _EXT_IMAGEM:
+                arquivos.append({
+                    "id": entry_id,
+                    "name": name,
+                    "mimeType": "image/jpeg",
+                })
 
     return arquivos
 
