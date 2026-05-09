@@ -486,8 +486,8 @@ table tr:last-child td{border-bottom:none}
     <h3>⚙️ Configuração da API</h3>
     <div class="form-group">
       <label>URL do Backend</label>
-      <input type="text" id="apiUrlInput" placeholder="http://localhost:8774">
-      <small>Em produção: URL do Render.com/Railway. Localmente: http://localhost:8774</small>
+      <input type="text" id="apiUrlInput" placeholder="http://localhost:8775">
+      <small>Em produção: URL do Render.com/Railway. Localmente: http://localhost:8775</small>
     </div>
     <div class="form-group">
       <label>Taxa Mão de Obra (R$/hora)</label>
@@ -503,7 +503,7 @@ table tr:last-child td{border-bottom:none}
 
 <script>
 // ═══════════════ CONFIG ═══════════════
-let API = localStorage.getItem('imperial_api') || 'http://localhost:8774';
+let API = localStorage.getItem('imperial_api') || 'http://localhost:8775';
 let TAXA_HORA = parseFloat(localStorage.getItem('imperial_taxa_hora') || '50');
 
 function toggleModal() {

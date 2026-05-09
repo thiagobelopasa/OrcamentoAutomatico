@@ -1,27 +1,112 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import os
+import logging
 from dotenv import load_dotenv
 
 from routers import projetos, matching
-from database import init_db
+from database import init_db, SessionLocal, ProjetoORM
 
 # Carrega variáveis de ambiente (.env.local tem prioridade)
 load_dotenv(".env.local", override=True)
 load_dotenv()
 
-# Inicializa banco de dados
-init_db()
+logger = logging.getLogger(__name__)
+
+
+async def _auto_sync_trello():
+    """Importa projetos do Trello se o banco estiver vazio."""
+    api_key = os.getenv("TRELLO_API_KEY")
+    api_token = os.getenv("TRELLO_API_TOKEN")
+    board_id = os.getenv("TRELLO_BOARD_ID")
+
+    if not all([api_key, api_token, board_id]):
+        logger.info("Auto-sync Trello ignorado: credenciais não configuradas")
+        return
+
+    db = SessionLocal()
+    try:
+        total = db.query(ProjetoORM).filter(ProjetoORM.trello_card_id.isnot(None)).count()
+        if total > 0:
+            logger.info(f"Auto-sync Trello ignorado: banco já tem {total} projetos")
+            return
+
+        logger.info("Banco vazio — iniciando auto-sync do Trello...")
+        from services.trello_sync import criar_sync_trello
+        import json
+        import uuid
+        from datetime import datetime
+
+        sync = criar_sync_trello(api_key, api_token, board_id)
+        dados = await sync.sincronizar_tudo(apenas_entrega=True)
+        await sync.fechar()
+
+        criados = 0
+        for card in dados.get("cards", []):
+            card_id = card["id"]
+            existe = db.query(ProjetoORM).filter(ProjetoORM.trello_card_id == card_id).first()
+            if existe:
+                continue
+
+            anexos = card.get("anexos", [])
+            urls_fotos = []
+            urls_fichas = []
+            for a in anexos:
+                url = a.get("url", "")
+                if not url:
+                    continue
+                nome = (a.get("name", "") or "").lower()
+                if any(x in nome for x in ["os", "ficha", "ordem", "producao", "orcamento"]):
+                    urls_fichas.append(url)
+                else:
+                    urls_fotos.append(url)
+            if not urls_fichas:
+                urls_fotos = [a.get("url") for a in anexos if a.get("url")]
+
+            proj_id = f"proj_{uuid.uuid4().hex[:12]}"
+            db.add(ProjetoORM(
+                id=proj_id,
+                nome=card["name"],
+                cliente=card["name"],
+                mes_entrega=card.get("mes_entrega", "INDEFINIDO"),
+                ano_entrega=card.get("ano_entrega", datetime.now().year),
+                trello_card_id=card_id,
+                trello_card_url=card.get("url"),
+                descricao=card.get("desc", ""),
+                urls_anexos=urls_fotos,
+                observacoes=f"Fichas OS: {','.join(urls_fichas)}" if urls_fichas else None,
+                materiais=[],
+                horas_trabalho=[],
+            ))
+            criados += 1
+
+        db.commit()
+        logger.info(f"Auto-sync concluído: {criados} projetos importados do Trello")
+
+    except Exception as e:
+        logger.error(f"Erro no auto-sync Trello: {e}")
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    if os.getenv("AUTO_SYNC_TRELLO", "").lower() == "true":
+        await _auto_sync_trello()
+    yield
+
 
 app = FastAPI(
     title="Orçamento Automático API",
-    description="Sistema de gestão de projetos (sofás) com integração Trello e Claude Vision API",
-    version="0.1.0",
+    description="Sistema de orçamentos de estofados com Claude Vision e Trello",
+    version="0.2.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,38 +115,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
 app.include_router(projetos.router)
 app.include_router(matching.router)
 
+
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "version": "0.1.0",
-        "timestamp": "2025-05-08"
-    }
+    db = SessionLocal()
+    try:
+        total = db.query(ProjetoORM).count()
+    finally:
+        db.close()
+    return {"status": "ok", "version": "0.2.0", "total_projetos": total}
+
 
 @app.get("/")
 def root():
     return {
         "nome": "Orçamento Automático API",
-        "versao": "0.1.0",
-        "descricao": "Sistema de gestão de projetos de sofás com integração Trello",
-        "endpoints": {
-            "health": "/health",
-            "projetos": "/projetos",
-            "docs": "/docs",
-            "redoc": "/redoc"
-        },
-        "features": [
-            "CRUD de projetos",
-            "Upload e análise de imagens com Claude Vision",
-            "Sincronização com Trello (polling 24h)",
-            "Rastreamento de materiais e horas de trabalho",
-            "Comparação orçado vs realizado"
-        ]
+        "versao": "0.2.0",
+        "docs": "/docs",
     }
+
 
 if __name__ == "__main__":
     import uvicorn

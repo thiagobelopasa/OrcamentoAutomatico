@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: orcamento-automatico
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TRELLO_API_KEY
+        sync: false
+      - key: TRELLO_API_TOKEN
+        sync: false
+      - key: TRELLO_BOARD_ID
+        sync: false
+      - key: AUTO_SYNC_TRELLO
+        value: "true"
+    healthCheckPath: /health
