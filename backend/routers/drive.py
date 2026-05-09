@@ -13,7 +13,11 @@ import uuid
 import httpx
 
 from database import get_db, ProjetoORM, SessionLocal
-from services.drive_sync import listar_arquivos_drive, parse_filename, url_download_drive
+from services.drive_sync import (
+    listar_arquivos_drive, listar_arquivos_drive_publico,
+    parse_filename, url_download_drive, url_download_drive_publico,
+    url_view_drive_publico,
+)
 from services.vision_matcher import VisionMatcher
 
 router = APIRouter(prefix="/drive", tags=["drive"])
@@ -45,7 +49,11 @@ async def _importar_drive(folder_id: str, api_key: str, analisar_vision: bool):
     })
 
     try:
-        arquivos = await listar_arquivos_drive(folder_id, api_key)
+        if api_key:
+            arquivos = await listar_arquivos_drive(folder_id, api_key)
+        else:
+            logger.info("GOOGLE_API_KEY não configurada — usando listagem pública (scraping)")
+            arquivos = await listar_arquivos_drive_publico(folder_id)
         _batch_drive["total"] = len(arquivos)
         logger.info(f"Drive: {len(arquivos)} arquivos encontrados")
     except Exception as e:
@@ -79,8 +87,8 @@ async def _importar_drive(folder_id: str, api_key: str, analisar_vision: bool):
             quantidade = info.get("quantidade") or 1
             nome_display = info.get("nome_original", filename)
 
-            # Baixa a imagem
-            dl_url = url_download_drive(file_id, api_key)
+            # Baixa a imagem (com ou sem API key)
+            dl_url = url_download_drive(file_id, api_key) if api_key else url_download_drive_publico(file_id)
             temp_path = Path(f"./temp_uploads/drive_{file_id}.jpg")
             temp_path.parent.mkdir(exist_ok=True)
 
@@ -94,7 +102,7 @@ async def _importar_drive(folder_id: str, api_key: str, analisar_vision: bool):
                     f.write(resp.content)
 
             # URL pública de visualização do Drive
-            foto_url = f"https://drive.google.com/uc?id={file_id}&export=view"
+            foto_url = url_view_drive_publico(file_id)
 
             # Análise Vision (opcional)
             visao_fotos = []
@@ -174,16 +182,16 @@ async def sync_drive(
     api_key = os.getenv("GOOGLE_API_KEY", "")
     folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 
-    if not api_key:
-        return {"erro": "GOOGLE_API_KEY não configurada no servidor"}
     if not folder_id:
         return {"erro": "GOOGLE_DRIVE_FOLDER_ID não configurada no servidor"}
 
+    modo = "API oficial" if api_key else "listagem pública (scraping)"
     background_tasks.add_task(_importar_drive, folder_id, api_key, analisar_vision)
 
     return {
-        "mensagem": "Sincronização do Google Drive iniciada em background",
+        "mensagem": f"Sincronização do Google Drive iniciada em background ({modo})",
         "analisar_vision": analisar_vision,
+        "modo": modo,
     }
 
 
