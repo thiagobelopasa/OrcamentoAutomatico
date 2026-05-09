@@ -94,11 +94,44 @@ async def _auto_sync_trello():
         db.close()
 
 
+async def _auto_vision_batch():
+    """Inicia análise Vision em background se menos de 10% dos projetos foram analisados."""
+    import asyncio
+    from routers.matching import _run_batch, _batch
+
+    db = SessionLocal()
+    try:
+        from database import ProjetoORM
+        todos = db.query(ProjetoORM).filter(ProjetoORM.trello_card_id.isnot(None)).all()
+        if not todos:
+            return
+        ja = sum(1 for p in todos if p.visao_fotos)
+        pct = ja / len(todos)
+        if pct >= 0.10:
+            logger.info(f"Auto-vision ignorado: {pct:.0%} já analisados")
+            return
+        pendentes = []
+        for p in todos:
+            ja_urls = {v["url"] for v in (p.visao_fotos or [])}
+            novas = [u for u in (p.urls_anexos or []) if u not in ja_urls]
+            if novas:
+                pendentes.append(p.id)
+        if not pendentes:
+            return
+        logger.info(f"Auto-vision: iniciando análise de {len(pendentes)} projetos em background")
+        asyncio.create_task(_run_batch(pendentes))
+    except Exception as e:
+        logger.error(f"Erro no auto-vision: {e}")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     if os.getenv("AUTO_SYNC_TRELLO", "").lower() == "true":
         await _auto_sync_trello()
+        await _auto_vision_batch()
     yield
 
 
