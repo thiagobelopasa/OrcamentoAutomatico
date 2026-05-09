@@ -441,10 +441,10 @@ table tr:last-child td{border-bottom:none}
       </div>
     </div>
 
-    <!-- Controles -->
+    <!-- Controles Trello -->
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-primary" id="btnIniciar" onclick="iniciarAnalise()">
-        🚀 Iniciar Análise Visual
+        🚀 Analisar fotos do Trello
       </button>
       <button class="btn btn-outline" id="btnParar" onclick="pararAnalise()" style="display:none">
         ⏹ Parar
@@ -452,6 +452,27 @@ table tr:last-child td{border-bottom:none}
       <button class="btn btn-outline btn-sm" onclick="verificarStatus()">
         🔄 Atualizar Status
       </button>
+    </div>
+
+    <!-- Separador Drive -->
+    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--beige)">
+      <div class="card-title" style="margin-bottom:12px">📁 Google Drive — Fotos de Referência</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">
+        Importa as fotos da pasta do Drive. O nome do arquivo contém a metragem e horas
+        (ex: <code style="background:var(--cream-dark);padding:2px 6px;border-radius:4px">1,5mt - 2,75hr.jpeg</code>).
+        Cada foto vira uma referência de orçamento no banco.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <button class="btn btn-primary btn-sm" id="btnDrive" onclick="sincronizarDrive()">
+          📁 Importar do Drive
+        </button>
+        <button class="btn btn-outline btn-sm" onclick="verificarStatusDrive()">
+          🔄 Status Drive
+        </button>
+      </div>
+      <div id="driveStatus" style="font-size:12px;color:var(--text-muted)">
+        Clique em "Status Drive" para ver o que já foi importado.
+      </div>
     </div>
 
     <!-- Log em tempo real -->
@@ -462,7 +483,7 @@ table tr:last-child td{border-bottom:none}
 
     <!-- Aviso de custo -->
     <div style="margin-top:16px;padding:12px;background:#FFF3CD;border-radius:8px;font-size:12px;color:var(--warn)">
-      💡 <strong>Custo estimado:</strong> ~R$ 5-8 em créditos Claude para analisar todos os projetos (~300 fotos).
+      💡 <strong>Custo estimado:</strong> ~R$ 5-8 em créditos Claude para analisar todos os projetos do Trello.
       A análise roda em background — você pode continuar usando o sistema normalmente.
     </div>
   </div>
@@ -1012,6 +1033,60 @@ async function pararAnalise() {
     toast('Parada solicitada — aguardando projeto atual', 'ok');
   } catch(e) {
     toast(`Erro: ${e.message}`, 'err');
+  }
+}
+
+async function sincronizarDrive() {
+  try {
+    document.getElementById('btnDrive').disabled = true;
+    document.getElementById('bancoLog').style.display = 'block';
+    document.getElementById('logBox').innerHTML = `<div>[${new Date().toLocaleTimeString('pt-BR')}] Conectando ao Google Drive...</div>`;
+
+    const res = await fetch(`${API}/drive/sync?analisar_vision=true`, { method: 'POST' });
+    const d = await res.json();
+
+    if (d.erro) {
+      toast(d.erro, 'err');
+      document.getElementById('btnDrive').disabled = false;
+      return;
+    }
+
+    toast('Importação do Drive iniciada em background!', 'ok');
+    const log = document.getElementById('logBox');
+    log.innerHTML += `<div>[${new Date().toLocaleTimeString('pt-BR')}] ${d.mensagem}</div>`;
+
+    // Poll status a cada 5s
+    const poll = setInterval(async () => {
+      try {
+        const s = await fetch(`${API}/drive/status`).then(r => r.json());
+        const b = s.batch;
+        const banco = s.banco;
+        log.innerHTML += `<div>[${new Date().toLocaleTimeString('pt-BR')}] Importados: ${b.done}/${b.total} | Drive total: ${banco.total_importados}</div>`;
+        log.scrollTop = log.scrollHeight;
+        if (!b.running) {
+          clearInterval(poll);
+          document.getElementById('btnDrive').disabled = false;
+          toast(`Drive: ${banco.total_importados} fotos importadas`, 'ok');
+          verificarStatusDrive();
+        }
+      } catch(e) {}
+    }, 5000);
+
+  } catch(e) {
+    toast(`Erro: ${e.message}`, 'err');
+    document.getElementById('btnDrive').disabled = false;
+  }
+}
+
+async function verificarStatusDrive() {
+  try {
+    const s = await fetch(`${API}/drive/status`).then(r => r.json());
+    const banco = s.banco;
+    document.getElementById('driveStatus').innerHTML =
+      `<strong>${banco.total_importados}</strong> fotos do Drive importadas ` +
+      `(${banco.com_vision} com análise Vision)`;
+  } catch(e) {
+    document.getElementById('driveStatus').textContent = 'Erro ao verificar status do Drive';
   }
 }
 </script>
