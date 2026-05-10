@@ -584,6 +584,7 @@ async def analisar_completo(
                     return {
                         "id": entry["cand_id"],
                         "proj_id": entry["proj_id"],
+                        "orig_url": entry["url"],  # URL original para exibir a foto que casou
                         "path": str(p),
                         "media_type": ct or "image/jpeg",
                     }
@@ -596,6 +597,8 @@ async def analisar_completo(
             raw_results = await asyncio.gather(*tasks)
         candidatos_com_path = [r for r in raw_results if r is not None]
         candidatos_paths = [c["path"] for c in candidatos_com_path]
+        # Mapa cand_id → URL original (para saber qual foto realmente casou)
+        url_por_cand = {c["id"]: c["orig_url"] for c in candidatos_com_path}
         logger.info(f"Comparação visual: {len(candidatos_com_path)} imagens de {len(projetos_todos)} cards")
 
         # 4) Comparação visual em lotes de 10 (Sonnet)
@@ -620,6 +623,8 @@ async def analisar_completo(
                 continue
             best = max(card_scores, key=lambda x: x["score"])
             b = banco_map.get(proj.id, {})
+            # Foto que REALMENTE casou (não a "foto do estofado" escolhida pelo Vision)
+            best_foto_url = url_por_cand.get(best["id"]) or b.get("foto_antes_url")
             metricas = _projeto_metricas(proj)
             matches.append({
                 "entrada_id": proj.id,
@@ -634,7 +639,7 @@ async def analisar_completo(
                 "valor_espuma": metricas["valor_espuma"],
                 "valor_mo": metricas["valor_mo"],
                 "custo_historico": 0,
-                "foto_url": b.get("foto_antes_url"),
+                "foto_url": best_foto_url,
                 "encosto": b.get("estrutura_encosto"),
                 "assento": b.get("estrutura_assento"),
                 "braco": b.get("estrutura_braco"),
