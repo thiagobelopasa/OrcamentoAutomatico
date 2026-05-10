@@ -54,19 +54,8 @@ async def _auto_sync_trello():
                 continue
 
             anexos = card.get("anexos", [])
-            urls_fotos = []
-            urls_fichas = []
-            for a in anexos:
-                url = a.get("url", "")
-                if not url:
-                    continue
-                nome = (a.get("name", "") or "").lower()
-                if any(x in nome for x in ["os", "ficha", "ordem", "producao", "orcamento"]):
-                    urls_fichas.append(url)
-                else:
-                    urls_fotos.append(url)
-            if not urls_fichas:
-                urls_fotos = [a.get("url") for a in anexos if a.get("url")]
+            # Todos os URLs — Vision classifica o que é foto vs ficha
+            urls_todos = [a.get("url") for a in anexos if a.get("url")]
 
             proj_id = f"proj_{uuid.uuid4().hex[:12]}"
             db.add(ProjetoORM(
@@ -78,8 +67,7 @@ async def _auto_sync_trello():
                 trello_card_id=card_id,
                 trello_card_url=card.get("url"),
                 descricao=card.get("desc", ""),
-                urls_anexos=urls_fotos,
-                observacoes=f"Fichas OS: {','.join(urls_fichas)}" if urls_fichas else None,
+                urls_anexos=urls_todos,
                 materiais=[],
                 horas_trabalho=[],
             ))
