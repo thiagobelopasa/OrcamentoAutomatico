@@ -84,7 +84,7 @@ class TrelloSync:
     def _lista_e_entrega(nome: str) -> bool:
         """Retorna True se a lista for do tipo ENTREGA MÊS ANO."""
         import re
-        return bool(re.match(r'^ENTREGA\s+\w+\s+\d{4}$', nome.strip(), re.IGNORECASE))
+        return bool(re.match(r'^ENTREGAS?\s+\w+\s+\d{4}$', nome.strip(), re.IGNORECASE))
 
     async def sincronizar_tudo(self, apenas_entrega: bool = True) -> Dict[str, Any]:
         """

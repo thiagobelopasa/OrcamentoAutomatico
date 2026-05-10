@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from services.vision_matcher import VisionMatcher, BANCO_EXEMPLO
 from services import card_analyzer
-from database import get_db, ProjetoORM, SessionLocal
+from database import get_db, ProjetoORM, SessionLocal, AnaliseProjeto
 
 router = APIRouter(prefix="/matching", tags=["matching"])
 logger = logging.getLogger(__name__)
@@ -388,6 +388,89 @@ def _projetos_para_banco(projetos: List[ProjetoORM]) -> List[dict]:
     return banco
 
 
+@router.post("/reset-e-reimportar")
+async def reset_e_reimportar(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+) -> dict:
+    """
+    Limpa o banco inteiro, reimporta do Trello e inicia análise Vision.
+    Usar quando o board mudou (listas arquivadas, cards novos).
+    """
+    import uuid
+    from datetime import datetime as dt
+    from services.trello_sync import criar_sync_trello
+
+    api_key = os.getenv("TRELLO_API_KEY")
+    api_token = os.getenv("TRELLO_API_TOKEN")
+    board_id = os.getenv("TRELLO_BOARD_ID")
+
+    if not all([api_key, api_token, board_id]):
+        raise HTTPException(status_code=400, detail="Credenciais Trello não configuradas (TRELLO_API_KEY, TRELLO_API_TOKEN, TRELLO_BOARD_ID)")
+
+    # 1) Limpa tudo
+    db.query(AnaliseProjeto).delete(synchronize_session=False)
+    db.query(ProjetoORM).delete(synchronize_session=False)
+    db.commit()
+    logger.info("Reset: banco limpo")
+
+    # 2) Importa do Trello (apenas listas ENTREGA/ENTREGAS MÊS ANO)
+    sync = criar_sync_trello(api_key, api_token, board_id)
+    dados = await sync.sincronizar_tudo(apenas_entrega=True)
+    await sync.fechar()
+
+    criados = 0
+    for card in dados.get("cards", []):
+        card_id = card["id"]
+        anexos = card.get("anexos", [])
+
+        urls_fotos = []
+        urls_fichas = []
+        for a in anexos:
+            url = a.get("url", "")
+            if not url:
+                continue
+            nome = (a.get("name", "") or "").lower()
+            if any(x in nome for x in ["os", "ficha", "ordem", "producao", "orcamento"]):
+                urls_fichas.append(url)
+            else:
+                urls_fotos.append(url)
+        if not urls_fichas:
+            urls_fotos = [a.get("url") for a in anexos if a.get("url")]
+
+        proj_id = f"proj_{uuid.uuid4().hex[:12]}"
+        db.add(ProjetoORM(
+            id=proj_id,
+            nome=card["name"],
+            cliente=card["name"],
+            mes_entrega=card.get("mes_entrega", "INDEFINIDO"),
+            ano_entrega=card.get("ano_entrega", dt.now().year),
+            trello_card_id=card_id,
+            trello_card_url=card.get("url"),
+            descricao=card.get("desc", ""),
+            urls_anexos=urls_fotos,
+            observacoes=f"Fichas OS: {','.join(urls_fichas)}" if urls_fichas else None,
+            materiais=[],
+            horas_trabalho=[],
+        ))
+        criados += 1
+
+    db.commit()
+    logger.info(f"Reset: {criados} projetos importados do Trello")
+
+    # 3) Inicia Vision batch em background para todos os novos projetos
+    ids = [p.id for p in db.query(ProjetoORM).all()]
+    background_tasks.add_task(_run_batch, ids)
+
+    return {
+        "mensagem": f"Reset OK: {criados} projetos importados, análise Vision iniciada",
+        "total_importados": criados,
+        "listas_importadas": dados.get("listas_importadas", []),
+        "estimativa_minutos": round(criados * 0.5, 1),
+        "acompanhe_em": "/matching/analisar-historico/status",
+    }
+
+
 @router.post("/analisar-foto")
 async def analisar_foto(file: UploadFile = File(...)) -> dict:
     try:
@@ -455,23 +538,22 @@ async def analisar_completo(
                 candidatos_pool = filtrados
                 logger.info(f"Pré-filtro tipo_peca={tipo_peca_upload}: {len(filtrados)} candidatos")
 
-        # Limita a 60 candidatos para controlar custo/latência
-        if len(candidatos_pool) > 60:
-            candidatos_pool = candidatos_pool[:60]
+        # Limita a 300 candidatos (custo controlado com Sonnet em lotes de 10)
+        if len(candidatos_pool) > 300:
+            candidatos_pool = candidatos_pool[:300]
 
-        # 3) Baixa fotos dos candidatos em paralelo
+        # 3) Baixa fotos dos candidatos em paralelo (1 cliente compartilhado)
         oauth = _trello_oauth_header()
         base_dir = Path("./temp_uploads")
         base_dir.mkdir(exist_ok=True)
         sem = asyncio.Semaphore(8)
 
-        async def _baixar_candidato(proj: ProjetoORM, idx: int):
+        async def _baixar_candidato(proj: ProjetoORM, idx: int, hc: httpx.AsyncClient):
             url = proj.foto_estofado_url
             async with sem:
                 try:
                     headers = {"Authorization": oauth} if "trello.com" in url else {}
-                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
-                        resp = await hc.get(url, headers=headers)
+                    resp = await hc.get(url, headers=headers)
                     if resp.status_code != 200:
                         return None
                     ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
@@ -485,8 +567,9 @@ async def analisar_completo(
                     logger.warning(f"Falha download candidato {url[:50]}: {e}")
                     return None
 
-        tasks = [_baixar_candidato(p, i) for i, p in enumerate(candidatos_pool)]
-        raw_results = await asyncio.gather(*tasks)
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
+            tasks = [_baixar_candidato(p, i, hc) for i, p in enumerate(candidatos_pool)]
+            raw_results = await asyncio.gather(*tasks)
         candidatos_com_path = [r for r in raw_results if r is not None]
         candidatos_paths = [c["path"] for c in candidatos_com_path]
         logger.info(f"Comparação visual: {len(candidatos_com_path)} candidatos baixados")

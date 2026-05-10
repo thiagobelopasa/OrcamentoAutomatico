@@ -604,7 +604,7 @@ async function analisar() {
   try {
     const fd = new FormData();
     fd.append('file', selFile);
-    const res = await fetch(`${API}/matching/analisar-completo?top_n=3`, { method:'POST', body:fd });
+    const res = await fetch(`${API}/matching/analisar-completo?top_n=5`, { method:'POST', body:fd });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     lastAnalysis = await res.json();
 

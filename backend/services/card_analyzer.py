@@ -311,7 +311,7 @@ def _comparar_lote_sync(
     content.append({"type": "text", "text": _COMPARISON_PROMPT})
 
     message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=1200,
         messages=[{"role": "user", "content": content}],
     )
@@ -338,7 +338,7 @@ def _comparar_lote_sync(
 def comparar_foto_com_candidatos(
     uploaded_path: str,
     candidatos: list[dict],
-    batch_size: int = 14,
+    batch_size: int = 10,
 ) -> list[dict]:
     """
     Compara visualmente uploaded_path contra cada candidato.
