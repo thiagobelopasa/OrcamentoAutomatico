@@ -95,9 +95,10 @@ async def _auto_sync_trello():
 
 
 async def _auto_vision_batch():
-    """Inicia análise Vision em background se menos de 10% dos projetos foram analisados."""
+    """Inicia análise unificada em background se há projetos pendentes."""
     import asyncio
     from routers.matching import _run_batch, _batch
+    from routers.matching import _url_eh_imagem
 
     db = SessionLocal()
     try:
@@ -105,20 +106,19 @@ async def _auto_vision_batch():
         todos = db.query(ProjetoORM).all()
         if not todos:
             return
-        ja = sum(1 for p in todos if p.visao_fotos)
-        pct = ja / len(todos)
-        if pct >= 0.10:
-            logger.info(f"Auto-vision ignorado: {pct:.0%} já analisados")
-            return
         pendentes = []
         for p in todos:
-            ja_urls = {v["url"] for v in (p.visao_fotos or [])}
-            novas = [u for u in (p.urls_anexos or []) if u not in ja_urls]
-            if novas:
-                pendentes.append(p.id)
+            if p.analise_unificada == 1 and p.estrutura is not None:
+                continue  # já feito
+            if not p.urls_anexos:
+                continue
+            if not any(_url_eh_imagem(u) for u in p.urls_anexos):
+                continue
+            pendentes.append(p.id)
         if not pendentes:
+            logger.info("Auto-vision: nada a fazer (tudo já analisado)")
             return
-        logger.info(f"Auto-vision: iniciando análise de {len(pendentes)} projetos em background")
+        logger.info(f"Auto-vision: {len(pendentes)} cards pendentes — iniciando em background")
         asyncio.create_task(_run_batch(pendentes))
     except Exception as e:
         logger.error(f"Erro no auto-vision: {e}")

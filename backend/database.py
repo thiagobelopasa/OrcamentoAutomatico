@@ -53,8 +53,18 @@ class ProjetoORM(Base):
     descricao = Column(String, nullable=True)
     observacoes = Column(String, nullable=True)
 
-    # Análise Vision por foto: [{url, encosto, assento, braco, confianca}]
+    # Análise Vision por foto: [{url, encosto, assento, braco, confianca}] (LEGADO)
     visao_fotos = Column(JSON, default=[])
+
+    # ─── Análise unificada por card (1 chamada Vision = 1 card inteiro) ──────────
+    # Foto do estofado escolhida (a melhor para matching visual)
+    foto_estofado_url = Column(String, nullable=True)
+    # Estrutura do estofado: {encosto, assento, braco, modulos, confianca, descricao}
+    estrutura = Column(JSON, nullable=True)
+    # Dados extraídos das fichas: {metragem_tecido, horas_totais, valor_espuma, ...}
+    dados_ficha = Column(JSON, nullable=True)
+    # Flag — true quando o card já passou pela análise unificada
+    analise_unificada = Column(Integer, default=0)  # 0=pendente, 1=feito, -1=erro
 
     # Rastreabilidade
     data_criacao = Column(DateTime, default=datetime.now)
@@ -131,11 +141,21 @@ class AnaliseProjeto(Base):
 def init_db():
     """Inicializa o banco de dados (cria todas as tabelas)"""
     Base.metadata.create_all(bind=engine)
-    # Migração: adiciona visao_fotos se o banco já existia sem ela
+    # Migração para bancos existentes — adiciona colunas novas se faltarem
+    is_postgres = "postgres" in DATABASE_URL
+    json_type = "JSONB" if is_postgres else "JSON"
+    migrations = [
+        f"visao_fotos {json_type}",
+        "drive_file_id TEXT",
+        "foto_estofado_url TEXT",
+        f"estrutura {json_type}",
+        f"dados_ficha {json_type}",
+        "analise_unificada INTEGER DEFAULT 0",
+    ]
     with engine.connect() as conn:
-        for col in ["visao_fotos JSON", "drive_file_id TEXT"]:
+        for col in migrations:
             try:
-                conn.execute(text(f"ALTER TABLE projetos ADD COLUMN {col}"))
+                conn.execute(text(f"ALTER TABLE projetos ADD COLUMN IF NOT EXISTS {col}" if is_postgres else f"ALTER TABLE projetos ADD COLUMN {col}"))
                 conn.commit()
             except Exception:
                 pass  # coluna já existe

@@ -12,6 +12,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from services.vision_matcher import VisionMatcher, BANCO_EXEMPLO
+from services import card_analyzer
 from database import get_db, ProjetoORM, SessionLocal
 
 router = APIRouter(prefix="/matching", tags=["matching"])
@@ -85,8 +86,44 @@ def _url_eh_imagem(url: str) -> bool:
     return True  # assume imagem por padrão
 
 
+async def _baixar_imagens_card(urls: List[str], oauth: str, proj_id: str) -> tuple[List[str], List[str]]:
+    """
+    Baixa todas as imagens de um card. Retorna (paths_locais, urls_correspondentes).
+    Pula URLs que não respondem ou não são imagens.
+    """
+    paths: List[str] = []
+    urls_ok: List[str] = []
+    base = Path("./temp_uploads"); base.mkdir(exist_ok=True)
+
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+        for idx, foto_url in enumerate(urls):
+            if not _url_eh_imagem(foto_url):
+                continue
+            try:
+                headers = {"Authorization": oauth} if "trello.com" in foto_url else {}
+                resp = await client.get(foto_url, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning(f"Foto indisponível ({resp.status_code}): {foto_url[:60]}")
+                    continue
+                ct = resp.headers.get("content-type", "")
+                if ct and not ct.startswith("image/"):
+                    continue
+                p = base / f"card_{proj_id}_{idx}.jpg"
+                with open(p, "wb") as f:
+                    f.write(resp.content)
+                paths.append(str(p))
+                urls_ok.append(foto_url)
+            except Exception as e:
+                logger.warning(f"Falha download {foto_url[:60]}: {e}")
+                continue
+    return paths, urls_ok
+
+
 async def _run_batch(projeto_ids: List[str]):
-    """Analisa Vision de TODAS as fotos de cada projeto."""
+    """
+    Analisa cada card em UMA chamada Vision (foto + fichas combinadas).
+    Salva foto_estofado_url, estrutura e dados_ficha.
+    """
     global _batch
     _batch.update({
         "running": True,
@@ -106,6 +143,7 @@ async def _run_batch(projeto_ids: List[str]):
             break
 
         db = SessionLocal()
+        downloaded: List[str] = []
         try:
             projeto = db.query(ProjetoORM).filter(ProjetoORM.id == proj_id).first()
             if not projeto:
@@ -114,110 +152,63 @@ async def _run_batch(projeto_ids: List[str]):
 
             _batch["current_nome"] = projeto.nome[:60]
 
-            urls = projeto.urls_anexos or []
+            # Já analisado? Pula
+            if projeto.analise_unificada == 1 and projeto.estrutura is not None:
+                _batch["skipped"] += 1
+                continue
+
+            urls = [u for u in (projeto.urls_anexos or []) if _url_eh_imagem(u)]
             if not urls:
+                projeto.analise_unificada = -1
+                db.commit()
                 _batch["skipped"] += 1
                 continue
 
-            # Carrega análises já feitas para não re-processar
-            visao_fotos = list(projeto.visao_fotos or [])
-            urls_ja = {v["url"] for v in visao_fotos}
-
-            fotos_novas = [u for u in urls if u not in urls_ja and _url_eh_imagem(u)]
-            if not fotos_novas:
+            # Baixa todas as imagens do card
+            paths, urls_ok = await _baixar_imagens_card(urls, oauth, proj_id)
+            downloaded = paths
+            if not paths:
+                projeto.analise_unificada = -1
+                db.commit()
                 _batch["skipped"] += 1
                 continue
 
-            for idx, foto_url in enumerate(fotos_novas):
-                if _batch["stop_requested"]:
-                    break
+            # UMA chamada Vision por card — recebe todas as imagens juntas
+            resultado = await asyncio.to_thread(
+                card_analyzer.analyze_card, paths, urls_ok
+            )
 
-                temp_path = Path(f"./temp_uploads/hist_{proj_id}_{idx}.jpg")
-                try:
-                    temp_path.parent.mkdir(exist_ok=True)
+            projeto.foto_estofado_url = resultado.get("foto_estofado_url")
+            projeto.estrutura = resultado.get("estrutura")
+            projeto.dados_ficha = resultado.get("dados_ficha")
+            projeto.analise_unificada = 1
 
-                    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                        headers = {"Authorization": oauth} if "trello.com" in foto_url else {}
-                        resp = await client.get(foto_url, headers=headers)
-                        if resp.status_code != 200:
-                            logger.warning(f"Foto indisponível ({resp.status_code}): {foto_url[:60]}")
-                            continue
-                        ct = resp.headers.get("content-type", "")
-                        if ct and not ct.startswith("image/"):
-                            logger.info(f"Ignorado (não imagem, ct={ct}): {foto_url[:60]}")
-                            continue
-                        with open(temp_path, "wb") as f:
-                            f.write(resp.content)
+            # Sincroniza materiais/horas com o que veio da ficha (se vier algo)
+            df = resultado.get("dados_ficha") or {}
+            mats = list(projeto.materiais or [])
+            horas = list(projeto.horas_trabalho or [])
+            mudou = False
+            if df.get("metragem_tecido") and not any("TECIDO" in m.get("nome","").upper() for m in mats):
+                mats.append({"nome": "TECIDO", "quantidade": df["metragem_tecido"], "unidade": "MT"})
+                mudou = True
+            if df.get("valor_espuma") and not any("ESPUMA" in m.get("nome","").upper() for m in mats):
+                mats.append({"nome": "ESPUMA", "quantidade": 1, "unidade": "UN",
+                             "observacoes": f"R${df['valor_espuma']:.0f}"})
+                mudou = True
+            if mudou:
+                projeto.materiais = mats
 
-                    descricao = await asyncio.to_thread(
-                        VisionMatcher.descrever_foto, str(temp_path)
-                    )
+            trabalhadores = df.get("trabalhadores") or []
+            if trabalhadores and not horas:
+                for t in trabalhadores:
+                    horas.append({"pessoa": t.get("nome","EQUIPE"),
+                                  "horas": float(t.get("horas", 0) or 0)})
+                projeto.horas_trabalho = horas
+                projeto.total_horas = sum(h["horas"] for h in horas)
+            elif df.get("horas_totais") and not horas:
+                projeto.horas_trabalho = [{"pessoa": "EQUIPE", "horas": float(df["horas_totais"])}]
+                projeto.total_horas = float(df["horas_totais"])
 
-                    enc = descricao.get("encosto", "desconhecido")
-                    ass = descricao.get("assento", "desconhecido")
-                    brc = descricao.get("braco", "desconhecido")
-
-                    visao_fotos.append({
-                        "url": foto_url,
-                        "encosto": enc,
-                        "assento": ass,
-                        "braco": brc,
-                        "confianca": descricao.get("confianca", "média"),
-                        "descricao": descricao.get("descricao_resumida", ""),
-                    })
-
-                    # Se todos campos "desconhecido" → provável ficha de produção
-                    # Tenta extrair metragem, horas e custos reais
-                    if enc == "desconhecido" and ass == "desconhecido" and brc == "desconhecido":
-                        try:
-                            ficha = await asyncio.to_thread(
-                                VisionMatcher.extrair_dados_ficha, str(temp_path)
-                            )
-                            if ficha.get("eh_ficha"):
-                                mats = list(projeto.materiais or [])
-                                horas = list(projeto.horas_trabalho or [])
-
-                                # Metragem de tecido
-                                m_tecido = ficha.get("metragem_tecido")
-                                if m_tecido and not any("TECIDO" in m.get("nome","").upper() for m in mats):
-                                    mats.append({"nome": "TECIDO", "quantidade": m_tecido, "unidade": "MT"})
-
-                                # Espuma
-                                val_espuma = ficha.get("valor_espuma")
-                                if val_espuma and not any("ESPUMA" in m.get("nome","").upper() for m in mats):
-                                    mats.append({"nome": "ESPUMA", "quantidade": 1, "unidade": "UN",
-                                                 "observacoes": f"R${val_espuma:.0f}"})
-
-                                # Horas de trabalho
-                                trabalhadores = ficha.get("trabalhadores") or []
-                                if trabalhadores and not horas:
-                                    for t in trabalhadores:
-                                        horas.append({"pessoa": t.get("nome","EQUIPE"),
-                                                      "horas": float(t.get("horas", 0))})
-                                elif ficha.get("horas_totais") and not horas:
-                                    horas.append({"pessoa": "EQUIPE",
-                                                  "horas": float(ficha["horas_totais"])})
-
-                                if mats != list(projeto.materiais or []):
-                                    projeto.materiais = mats
-                                if horas != list(projeto.horas_trabalho or []):
-                                    projeto.horas_trabalho = horas
-                                    projeto.total_horas = sum(h["horas"] for h in horas)
-                        except Exception as ef:
-                            logger.warning(f"Falha ao extrair ficha: {ef}")
-
-                    await asyncio.sleep(0.5)
-
-                except Exception as e:
-                    logger.error(f"Erro ao analisar foto {idx} de {proj_id}: {e}")
-                finally:
-                    if temp_path.exists():
-                        try:
-                            temp_path.unlink()
-                        except Exception:
-                            pass
-
-            projeto.visao_fotos = visao_fotos
             projeto.data_atualizacao = datetime.now()
             db.commit()
             _batch["done"] += 1
@@ -225,10 +216,21 @@ async def _run_batch(projeto_ids: List[str]):
         except Exception as e:
             logger.error(f"Erro no batch [{proj_id}]: {e}")
             _batch["errors"] += 1
+            try:
+                if projeto:
+                    projeto.analise_unificada = -1
+                    db.commit()
+            except Exception:
+                pass
         finally:
+            for p in downloaded:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
             db.close()
 
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)
 
     _batch["running"] = False
     _batch["current_nome"] = None
@@ -251,15 +253,16 @@ async def analisar_historico(
         .all()
     )
 
-    # Inclui projetos sem visao_fotos OU com fotos ainda não analisadas
+    # Pendentes = analise_unificada != 1 e tem URLs de imagem
     pendentes = []
     for p in todos:
+        if p.analise_unificada == 1 and p.estrutura is not None:
+            continue
         if not p.urls_anexos:
             continue
-        ja_analisadas = {v["url"] for v in (p.visao_fotos or [])}
-        fotos_novas = [u for u in p.urls_anexos if u not in ja_analisadas and _url_eh_imagem(u)]
-        if fotos_novas:
-            pendentes.append(p)
+        if not any(_url_eh_imagem(u) for u in p.urls_anexos):
+            continue
+        pendentes.append(p)
 
     if not pendentes:
         return {"mensagem": "Todos os projetos já foram analisados"}
@@ -270,7 +273,7 @@ async def analisar_historico(
     return {
         "mensagem": f"Iniciando análise de {len(ids)} projetos em background",
         "total_a_analisar": len(ids),
-        "estimativa_minutos": round(len(ids) * 2 / 60, 1),
+        "estimativa_minutos": round(len(ids) * 0.5, 1),  # ~30s por card (1 chamada Vision)
     }
 
 
@@ -285,18 +288,21 @@ async def status_analise(db: Session = Depends(get_db)) -> dict:
     """Retorna progresso do batch + totais do banco."""
     todos = db.query(ProjetoORM).all()
     total_banco = len(todos)
-    ja_analisados = sum(1 for p in todos if p.visao_fotos)
-    total_fotos = sum(len(p.visao_fotos or []) for p in todos)
-    pendentes = total_banco - ja_analisados
-    pct = round(ja_analisados / total_banco * 100, 1) if total_banco else 0
+    ja = sum(1 for p in todos if p.analise_unificada == 1)
+    erro = sum(1 for p in todos if p.analise_unificada == -1)
+    com_estrutura = sum(1 for p in todos if p.estrutura and p.estrutura.get("encosto") not in (None, "desconhecido"))
+    com_ficha = sum(1 for p in todos if p.dados_ficha and p.dados_ficha.get("metragem_tecido"))
+    pct = round(ja / total_banco * 100, 1) if total_banco else 0
 
     return {
         "batch": _batch,
         "banco": {
             "total": total_banco,
-            "analisados": ja_analisados,
-            "pendentes": pendentes,
-            "total_fotos_analisadas": total_fotos,
+            "analisados": ja,
+            "com_erro": erro,
+            "com_estrutura": com_estrutura,
+            "com_ficha_completa": com_ficha,
+            "pendentes": total_banco - ja - erro,
             "pct_completo": pct,
         }
     }
@@ -305,76 +311,79 @@ async def status_analise(db: Session = Depends(get_db)) -> dict:
 # ─── MATCHING ───────────────────────────────────────────────────────────────────
 
 def _projeto_metricas(p: ProjetoORM) -> dict:
-    """Extrai métricas de orçamento de um projeto."""
-    m_tecido = 0.0
-    for m in (p.materiais or []):
-        if "TECIDO" in m.get("nome", "").upper():
-            m_tecido += float(m.get("quantidade", 0))
+    """
+    Extrai métricas de orçamento de um projeto.
+    Prioridade: dados_ficha (Vision) → materiais/horas (legado) → defaults.
+    Retorna também flag indicando se vieram da ficha.
+    """
+    df = p.dados_ficha or {}
+
+    m_tecido = df.get("metragem_tecido")
     if not m_tecido:
-        m_tecido = 17.0
+        m_tecido = 0.0
+        for m in (p.materiais or []):
+            if "TECIDO" in m.get("nome", "").upper():
+                m_tecido += float(m.get("quantidade", 0))
+    m_tecido = float(m_tecido) if m_tecido else 17.0
 
-    total_horas = float(p.total_horas or 0)
-    if not total_horas:
-        total_horas = sum(float(h.get("horas", 0)) for h in (p.horas_trabalho or []))
-    if not total_horas:
-        total_horas = 32.0
+    horas = df.get("horas_totais")
+    if not horas:
+        horas = float(p.total_horas or 0)
+        if not horas:
+            horas = sum(float(h.get("horas", 0)) for h in (p.horas_trabalho or []))
+    horas = float(horas) if horas else 32.0
 
-    return {"m_tecido": m_tecido, "horas_totais": total_horas}
+    tem_dados_reais = bool(df.get("metragem_tecido") or df.get("horas_totais"))
+
+    return {
+        "m_tecido": m_tecido,
+        "horas_totais": horas,
+        "tem_dados_reais": tem_dados_reais,
+        "tipo_peca": df.get("tipo_peca"),
+        "quantidade_pecas": df.get("quantidade_pecas"),
+        "valor_espuma": df.get("valor_espuma"),
+        "valor_mo": df.get("valor_mo"),
+    }
 
 
 def _projetos_para_banco(projetos: List[ProjetoORM]) -> List[dict]:
     """
-    Expande cada projeto em UMA entrada por foto analisada via Vision.
-    Assim o matching aponta para a foto exata que gerou a similaridade.
+    UMA entrada por projeto (não por foto). Usa estrutura unificada do card.
+    Só projetos com estrutura identificada entram no pool de matching estrutural.
     """
     banco = []
     for p in projetos:
         metricas = _projeto_metricas(p)
+        est = p.estrutura or {}
+        encosto = est.get("encosto", "desconhecido")
+        tem_estrutura = encosto not in (None, "", "desconhecido")
 
-        visao_fotos = p.visao_fotos or []
+        # Foto a exibir: a foto do estofado escolhida pelo Vision (não fichas)
+        foto_url = p.foto_estofado_url
+        if not foto_url and p.urls_anexos:
+            foto_url = p.urls_anexos[0]
 
-        if visao_fotos:
-            # Uma entrada por foto analisada
-            for vf in visao_fotos:
-                encosto = vf.get("encosto", "desconhecido")
-                banco.append({
-                    "id": p.id,
-                    "foto_key": vf["url"],  # chave única: projeto + foto específica
-                    "categoria": p.nome,
-                    "estrutura_encosto": encosto,
-                    "estrutura_assento": vf.get("assento", "desconhecido"),
-                    "estrutura_braco": vf.get("braco", "desconhecido"),
-                    "confianca_vision": vf.get("confianca", "média"),
-                    "foto_antes_url": vf["url"],  # ← foto específica desta análise
-                    "trello_card_url": p.trello_card_url,
-                    "mes_entrega": p.mes_entrega,
-                    "ano_entrega": p.ano_entrega,
-                    "m_tecido": metricas["m_tecido"],
-                    "horas_totais": metricas["horas_totais"],
-                    "custo_historico": 0,
-                    "tem_estrutura": encosto != "desconhecido",
-                })
-        else:
-            # Fallback legado: usa primeira URL sem análise
-            urls = p.urls_anexos or []
-            foto_url = urls[0] if urls else None
-            banco.append({
-                "id": p.id,
-                "foto_key": foto_url,
-                "categoria": p.nome,
-                "estrutura_encosto": "desconhecido",
-                "estrutura_assento": "desconhecido",
-                "estrutura_braco": "desconhecido",
-                "confianca_vision": "baixa",
-                "foto_antes_url": foto_url,
-                "trello_card_url": p.trello_card_url,
-                "mes_entrega": p.mes_entrega,
-                "ano_entrega": p.ano_entrega,
-                "m_tecido": metricas["m_tecido"],
-                "horas_totais": metricas["horas_totais"],
-                "custo_historico": 0,
-                "tem_estrutura": False,
-            })
+        banco.append({
+            "id": p.id,
+            "categoria": p.nome,
+            "estrutura_encosto": encosto,
+            "estrutura_assento": est.get("assento", "desconhecido"),
+            "estrutura_braco": est.get("braco", "desconhecido"),
+            "confianca_vision": est.get("confianca", "média"),
+            "descricao_estrutura": est.get("descricao_resumida", ""),
+            "foto_antes_url": foto_url,
+            "trello_card_url": p.trello_card_url,
+            "mes_entrega": p.mes_entrega,
+            "ano_entrega": p.ano_entrega,
+            "m_tecido": metricas["m_tecido"],
+            "horas_totais": metricas["horas_totais"],
+            "tem_dados_reais": metricas["tem_dados_reais"],
+            "tipo_peca": metricas["tipo_peca"],
+            "quantidade_pecas": metricas["quantidade_pecas"],
+            "valor_espuma": metricas["valor_espuma"],
+            "valor_mo": metricas["valor_mo"],
+            "tem_estrutura": tem_estrutura,
+        })
 
     return banco
 
@@ -403,7 +412,8 @@ async def analisar_completo(
 ) -> dict:
     """
     Pipeline completo: analisa foto do cliente → encontra matches no banco histórico.
-    Retorna a foto histórica ESPECÍFICA que mais se assemelha (não só o projeto).
+    Pool: apenas projetos com estrutura identificada (analise_unificada=1).
+    Match retorna foto_estofado_url + dados_ficha do card correspondente.
     """
     temp_path = None
     try:
@@ -412,65 +422,85 @@ async def analisar_completo(
         with open(temp_path, "wb") as f:
             f.write(await file.read())
 
-        logger.info("Iniciando análise com Vision...")
-        descricao = await asyncio.to_thread(VisionMatcher.descrever_foto, str(temp_path))
-        logger.info(f"Análise concluída: {descricao}")
+        logger.info("Analisando estrutura da foto enviada...")
+        # Usa o card_analyzer com 1 imagem (mais completo que VisionMatcher antigo)
+        resultado_upload = await asyncio.to_thread(
+            card_analyzer.analyze_card, [str(temp_path)], [""]
+        )
+        estrutura_upload = resultado_upload.get("estrutura", {})
+        logger.info(f"Estrutura: {estrutura_upload}")
 
+        # Busca apenas projetos analisados com sucesso
         projetos = (
             db.query(ProjetoORM)
+            .filter(ProjetoORM.analise_unificada == 1)
             .order_by(ProjetoORM.data_criacao.desc())
-            .limit(500)
             .all()
         )
 
-        # Expande: uma entrada por foto analisada em cada projeto
         banco_real = _projetos_para_banco(projetos)
         banco_com = [b for b in banco_real if b.get("tem_estrutura")]
-        banco_sem = [b for b in banco_real if not b.get("tem_estrutura")]
 
-        # Matches estruturais (compara contra todas as fotos analisadas)
-        matches = VisionMatcher.encontrar_matches(descricao, banco_com, top_n=top_n) if banco_com else []
-
-        # Complementa com projetos sem estrutura se necessário
-        projetos_incl = {m["entrada_id"] for m in matches}
-        for c in banco_sem:
-            if len(matches) >= top_n:
-                break
-            if c["id"] in projetos_incl:
-                continue
-            matches.append({
-                "entrada_id": c["id"],
-                "categoria": c["categoria"],
-                "similaridade_pct": 45.0,
-                "m_tecido": c["m_tecido"],
-                "horas_totais": c["horas_totais"],
-                "custo_historico": c["custo_historico"],
-                "foto_url": c["foto_antes_url"],
-                "encosto": c["estrutura_encosto"],
-                "assento": c["estrutura_assento"],
-                "braco": c["estrutura_braco"],
-                "trello_card_url": c.get("trello_card_url"),
-                "mes_entrega": c.get("mes_entrega"),
-                "ano_entrega": c.get("ano_entrega"),
-                "sem_estrutura": True,
+        # Calcula similaridade contra cada projeto com estrutura
+        matches = []
+        for b in banco_com:
+            sim = card_analyzer.calcular_similaridade(estrutura_upload, {
+                "encosto": b["estrutura_encosto"],
+                "assento": b["estrutura_assento"],
+                "braco": b["estrutura_braco"],
+                "confianca": estrutura_upload.get("confianca", "média"),
             })
-            projetos_incl.add(c["id"])
+            matches.append({
+                "entrada_id": b["id"],
+                "categoria": b["categoria"],
+                "similaridade_pct": round(sim, 1),
+                "m_tecido": b["m_tecido"],
+                "horas_totais": b["horas_totais"],
+                "tem_dados_reais": b["tem_dados_reais"],
+                "tipo_peca": b["tipo_peca"],
+                "quantidade_pecas": b["quantidade_pecas"],
+                "valor_espuma": b["valor_espuma"],
+                "valor_mo": b["valor_mo"],
+                "custo_historico": 0,
+                "foto_url": b["foto_antes_url"],
+                "encosto": b["estrutura_encosto"],
+                "assento": b["estrutura_assento"],
+                "braco": b["estrutura_braco"],
+                "descricao_estrutura": b.get("descricao_estrutura", ""),
+                "trello_card_url": b.get("trello_card_url"),
+                "mes_entrega": b.get("mes_entrega"),
+                "ano_entrega": b.get("ano_entrega"),
+            })
+        matches.sort(key=lambda x: (-x["similaridade_pct"], 0 if x["tem_dados_reais"] else 1))
+        matches = matches[:top_n]
 
+        # Fallback: nada analisado ainda
         if not matches:
-            matches = VisionMatcher.encontrar_matches(descricao, BANCO_EXEMPLO, top_n=top_n)
-
-        total_fotos = sum(len(p.visao_fotos or []) for p in projetos)
-        total_analisados = sum(1 for p in projetos if p.visao_fotos)
+            matches = [{
+                "entrada_id": "exemplo",
+                "categoria": "Banco vazio — rode /matching/analisar-historico",
+                "similaridade_pct": 0,
+                "m_tecido": 17.0, "horas_totais": 32.0,
+                "tem_dados_reais": False,
+                "foto_url": None,
+                "encosto": "desconhecido", "assento": "desconhecido", "braco": "desconhecido",
+            }]
 
         return {
             "sucesso": True,
-            "analise_foto": descricao,
+            "analise_foto": {
+                "encosto": estrutura_upload.get("encosto"),
+                "assento": estrutura_upload.get("assento"),
+                "braco": estrutura_upload.get("braco"),
+                "modulos": estrutura_upload.get("modulos"),
+                "descricao_resumida": estrutura_upload.get("descricao_resumida"),
+                "confianca": estrutura_upload.get("confianca"),
+            },
             "matches_encontrados": len(matches),
             "top_matches": matches,
             "recomendacao": matches[0] if matches else None,
             "total_no_banco": len(projetos),
-            "total_analisados_estruturalmente": total_analisados,
-            "total_fotos_no_banco": total_fotos,
+            "total_analisados_estruturalmente": len(banco_com),
         }
 
     except Exception as e:
