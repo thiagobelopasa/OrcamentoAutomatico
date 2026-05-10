@@ -411,70 +411,128 @@ async def analisar_completo(
     db: Session = Depends(get_db)
 ) -> dict:
     """
-    Pipeline completo: analisa foto do cliente → encontra matches no banco histórico.
-    Pool: apenas projetos com estrutura identificada (analise_unificada=1).
-    Match retorna foto_estofado_url + dados_ficha do card correspondente.
+    Pipeline completo: analisa foto do cliente → comparação visual real com banco histórico.
+    Cada candidato é comparado visualmente (Vision) com a foto enviada — sem tag matching.
     """
     temp_path = None
+    candidatos_paths: List[str] = []
     try:
         temp_path = Path(f"./temp_uploads/{file.filename}")
         temp_path.parent.mkdir(exist_ok=True)
         with open(temp_path, "wb") as f:
             f.write(await file.read())
 
+        # 1) Analisa a foto enviada (obtém tipo_peca para pré-filtro e dados de exibição)
         logger.info("Analisando estrutura da foto enviada...")
-        # Usa o card_analyzer com 1 imagem (mais completo que VisionMatcher antigo)
         resultado_upload = await asyncio.to_thread(
             card_analyzer.analyze_card, [str(temp_path)], [""]
         )
         estrutura_upload = resultado_upload.get("estrutura", {})
-        logger.info(f"Estrutura: {estrutura_upload}")
+        dados_ficha_upload = resultado_upload.get("dados_ficha", {})
+        tipo_peca_upload = (dados_ficha_upload.get("tipo_peca") or "").upper().strip()
+        logger.info(f"Estrutura: {estrutura_upload}, tipo_peca: {tipo_peca_upload}")
 
-        # Busca apenas projetos analisados com sucesso
-        projetos = (
+        # 2) Pool de candidatos: projetos analisados com foto do estofado identificada
+        projetos_todos = (
             db.query(ProjetoORM)
             .filter(ProjetoORM.analise_unificada == 1)
             .order_by(ProjetoORM.data_criacao.desc())
             .all()
         )
+        banco_real = _projetos_para_banco(projetos_todos)
+        banco_map = {b["id"]: b for b in banco_real}
 
-        banco_real = _projetos_para_banco(projetos)
-        banco_com = [b for b in banco_real if b.get("tem_estrutura")]
+        # Apenas candidatos com foto do estofado para comparação visual
+        candidatos_pool = [p for p in projetos_todos if p.foto_estofado_url]
 
-        # Calcula similaridade contra cada projeto com estrutura
+        # Pré-filtro por tipo_peca: se sabemos que é POLTRONA, só compara com POLTRONA
+        if tipo_peca_upload and len(candidatos_pool) > 10:
+            filtrados = [
+                p for p in candidatos_pool
+                if p.dados_ficha and (p.dados_ficha.get("tipo_peca") or "").upper() == tipo_peca_upload
+            ]
+            if len(filtrados) >= 3:
+                candidatos_pool = filtrados
+                logger.info(f"Pré-filtro tipo_peca={tipo_peca_upload}: {len(filtrados)} candidatos")
+
+        # Limita a 60 candidatos para controlar custo/latência
+        if len(candidatos_pool) > 60:
+            candidatos_pool = candidatos_pool[:60]
+
+        # 3) Baixa fotos dos candidatos em paralelo
+        oauth = _trello_oauth_header()
+        base_dir = Path("./temp_uploads")
+        base_dir.mkdir(exist_ok=True)
+        sem = asyncio.Semaphore(8)
+
+        async def _baixar_candidato(proj: ProjetoORM, idx: int):
+            url = proj.foto_estofado_url
+            async with sem:
+                try:
+                    headers = {"Authorization": oauth} if "trello.com" in url else {}
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
+                        resp = await hc.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        return None
+                    ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                    if ct and not ct.startswith("image/"):
+                        return None
+                    p = base_dir / f"cand_{proj.id}_{idx}.jpg"
+                    with open(p, "wb") as fh:
+                        fh.write(resp.content)
+                    return {"id": proj.id, "path": str(p), "media_type": ct or "image/jpeg"}
+                except Exception as e:
+                    logger.warning(f"Falha download candidato {url[:50]}: {e}")
+                    return None
+
+        tasks = [_baixar_candidato(p, i) for i, p in enumerate(candidatos_pool)]
+        raw_results = await asyncio.gather(*tasks)
+        candidatos_com_path = [r for r in raw_results if r is not None]
+        candidatos_paths = [c["path"] for c in candidatos_com_path]
+        logger.info(f"Comparação visual: {len(candidatos_com_path)} candidatos baixados")
+
+        # 4) Comparação visual em lotes (1 chamada Vision por lote de 14)
+        scores_list = await asyncio.to_thread(
+            card_analyzer.comparar_foto_com_candidatos,
+            str(temp_path),
+            candidatos_com_path,
+        )
+        score_map = {s["id"]: s for s in scores_list}
+
+        # 5) Monta resultados
         matches = []
-        for b in banco_com:
-            sim = card_analyzer.calcular_similaridade(estrutura_upload, {
-                "encosto": b["estrutura_encosto"],
-                "assento": b["estrutura_assento"],
-                "braco": b["estrutura_braco"],
-                "confianca": estrutura_upload.get("confianca", "média"),
-            })
+        for proj in candidatos_pool:
+            score_data = score_map.get(proj.id)
+            if not score_data:
+                continue
+            b = banco_map.get(proj.id, {})
+            metricas = _projeto_metricas(proj)
             matches.append({
-                "entrada_id": b["id"],
-                "categoria": b["categoria"],
-                "similaridade_pct": round(sim, 1),
-                "m_tecido": b["m_tecido"],
-                "horas_totais": b["horas_totais"],
-                "tem_dados_reais": b["tem_dados_reais"],
-                "tipo_peca": b["tipo_peca"],
-                "quantidade_pecas": b["quantidade_pecas"],
-                "valor_espuma": b["valor_espuma"],
-                "valor_mo": b["valor_mo"],
+                "entrada_id": proj.id,
+                "categoria": proj.nome,
+                "similaridade_pct": round(score_data["score"], 1),
+                "similaridade_nota": score_data.get("nota", ""),
+                "m_tecido": metricas["m_tecido"],
+                "horas_totais": metricas["horas_totais"],
+                "tem_dados_reais": metricas["tem_dados_reais"],
+                "tipo_peca": metricas["tipo_peca"],
+                "quantidade_pecas": metricas["quantidade_pecas"],
+                "valor_espuma": metricas["valor_espuma"],
+                "valor_mo": metricas["valor_mo"],
                 "custo_historico": 0,
-                "foto_url": b["foto_antes_url"],
-                "encosto": b["estrutura_encosto"],
-                "assento": b["estrutura_assento"],
-                "braco": b["estrutura_braco"],
+                "foto_url": b.get("foto_antes_url"),
+                "encosto": b.get("estrutura_encosto"),
+                "assento": b.get("estrutura_assento"),
+                "braco": b.get("estrutura_braco"),
                 "descricao_estrutura": b.get("descricao_estrutura", ""),
                 "trello_card_url": b.get("trello_card_url"),
                 "mes_entrega": b.get("mes_entrega"),
                 "ano_entrega": b.get("ano_entrega"),
             })
+
         matches.sort(key=lambda x: (-x["similaridade_pct"], 0 if x["tem_dados_reais"] else 1))
         matches = matches[:top_n]
 
-        # Fallback: nada analisado ainda
         if not matches:
             matches = [{
                 "entrada_id": "exemplo",
@@ -495,12 +553,14 @@ async def analisar_completo(
                 "modulos": estrutura_upload.get("modulos"),
                 "descricao_resumida": estrutura_upload.get("descricao_resumida"),
                 "confianca": estrutura_upload.get("confianca"),
+                "tipo_peca": tipo_peca_upload or None,
             },
             "matches_encontrados": len(matches),
             "top_matches": matches,
             "recomendacao": matches[0] if matches else None,
-            "total_no_banco": len(projetos),
-            "total_analisados_estruturalmente": len(banco_com),
+            "total_no_banco": len(projetos_todos),
+            "total_com_foto": len(candidatos_com_path),
+            "total_analisados_estruturalmente": len([p for p in projetos_todos if p.estrutura and p.estrutura.get("encosto") not in (None, "desconhecido")]),
         }
 
     except Exception as e:
@@ -511,6 +571,11 @@ async def analisar_completo(
         if temp_path and temp_path.exists():
             try:
                 temp_path.unlink()
+            except Exception:
+                pass
+        for cp in candidatos_paths:
+            try:
+                Path(cp).unlink(missing_ok=True)
             except Exception:
                 pass
 

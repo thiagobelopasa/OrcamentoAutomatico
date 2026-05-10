@@ -721,8 +721,9 @@ function renderResultado() {
           </div>
         </div>
         <div class="match-right">
-          <div class="pct-label">similaridade</div>
+          <div class="pct-label">similaridade visual</div>
           <div class="pct-big" style="color:${cor}">${pct}%</div>
+          ${m.similaridade_nota ? `<div style="font-size:9px;color:var(--text-muted);margin-top:4px;line-height:1.3;text-align:center">${m.similaridade_nota}</div>` : ''}
           ${m.custo_historico ? `<div class="price-hist">R$ ${Number(m.custo_historico).toLocaleString('pt-BR')}<span>custo histórico</span></div>` : ''}
         </div>
       </div>
@@ -765,7 +766,7 @@ function preencherOrcamento(idx) {
   } else {
     ri.style.display = 'none'; re.style.display = 'flex';
   }
-  document.getElementById('refTag').textContent = `${m.similaridade_pct}% de similaridade`;
+  document.getElementById('refTag').textContent = m.similaridade_nota ? `${m.similaridade_pct}% — ${m.similaridade_nota}` : `${m.similaridade_pct}% de similaridade visual`;
   document.getElementById('refPct').textContent = `${m.similaridade_pct}%`;
   document.getElementById('refEncosto').textContent = fmt(m.encosto);
   document.getElementById('refAssento').textContent = fmt(m.assento);

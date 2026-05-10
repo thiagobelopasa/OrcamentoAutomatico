@@ -71,7 +71,10 @@ REGRAS:
 
 4. Em fichas manuscritas: leia os valores escritos à mão.
 
-5. horas_totais = soma de horas de TODOS os trabalhadores listados.
+5. horas_totais = SOMENTE horas de trabalho (ex: 6, 8.5, 32). NUNCA use um valor monetário.
+   "R$ 1.213" ou "1213" após "M.O" ou "Espuma" é DINHEIRO, não horas.
+   Horas vêm de campos como "Horas", "H.T", nome de trabalhador + número pequeno (< 200).
+   Soma de horas de TODOS os trabalhadores listados.
 
 6. Se NÃO houver foto de estofado: foto_estofado_index = null,
    estrutura.confianca = "nenhuma", todos os campos de estrutura = "desconhecido".
@@ -252,20 +255,121 @@ def _empty_result(reason: str) -> dict[str, Any]:
     }
 
 
-def calcular_similaridade(estrutura_foto: dict, estrutura_projeto: dict) -> float:
-    """
-    Compara estrutura da foto enviada com estrutura de projeto histórico.
-    Retorna % (0-100).
-    """
-    pontos = 0
-    if estrutura_foto.get("encosto") == estrutura_projeto.get("encosto"):
-        pontos += 1
-    if estrutura_foto.get("assento") == estrutura_projeto.get("assento"):
-        pontos += 1
-    if estrutura_foto.get("braco") == estrutura_projeto.get("braco"):
-        pontos += 1
-    sim = (pontos / 3) * 100
+_COMPARISON_PROMPT = """Você é especialista em reforma de estofados. Compare a REFERÊNCIA com cada CANDIDATO.
 
-    confianca_map = {"alta": 1.0, "média": 0.85, "media": 0.85, "baixa": 0.6, "nenhuma": 0.4}
-    mult = confianca_map.get(estrutura_foto.get("confianca", "média"), 0.85)
-    return sim * mult
+REFERÊNCIA: primeira imagem (foto do cliente que precisa de orçamento).
+CANDIDATOS: demais imagens (projetos históricos concluídos), numerados a partir de 1.
+
+Para cada candidato, dê pontuação de SIMILARIDADE VISUAL (0-100) com a referência:
+- 90-100: idêntico ou antes/depois do mesmo objeto
+- 70-89: mesmo modelo, variações menores (cor, módulo adicional)
+- 50-69: estilo semelhante mas com diferença clara em 1 característica principal
+- 20-49: mesmo tipo genérico (sofá/poltrona) mas estrutura visivelmente diferente
+- 0-19: completamente diferente em tipo ou forma
+
+Analise DETALHADAMENTE:
+1. Tipo de assento: capitonê diagonal (losangos), gomos/ondas, liso, lisa com costura
+2. Tipo de encosto: 2 almofadas empilhadas, capitonê, gomos verticais, reto liso
+3. Modelo de braço: boxy quadrado, reto com costura, alumínio/madeira, sem braço
+4. Quantidade de módulos/lugares
+5. Porte geral: poltrona pequena vs sofá grande
+
+Dois sofás retráteis parecidos podem ter costuras diferentes → score < 100.
+Antes e depois do MESMO sofá = score 100.
+
+Responda APENAS este JSON, sem markdown:
+{"scores": [{"i": 1, "score": 85, "nota": "mesmo gomos no assento, braço diferente"}, ...]}
+
+"i" é o número do candidato (1 = segundo image_block).
+Inclua um objeto para CADA candidato recebido."""
+
+
+def _comparar_lote_sync(
+    uploaded_b64: str,
+    uploaded_media_type: str,
+    candidatos: list[dict],
+    client,
+) -> list[dict]:
+    """Compara 1 referência com um lote de candidatos em 1 chamada Vision."""
+    content = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": uploaded_media_type, "data": uploaded_b64},
+        }
+    ]
+    for c in candidatos:
+        with open(c["path"], "rb") as f:
+            b64 = base64.standard_b64encode(f.read()).decode("utf-8")
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": c.get("media_type", "image/jpeg"),
+                "data": b64,
+            },
+        })
+    content.append({"type": "text", "text": _COMPARISON_PROMPT})
+
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1200,
+        messages=[{"role": "user", "content": content}],
+    )
+    text = message.content[0].text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    text = text.strip()
+
+    data = json.loads(text)
+    results = []
+    for s in data.get("scores", []):
+        idx = int(s.get("i", 0)) - 1
+        if 0 <= idx < len(candidatos):
+            results.append({
+                "id": candidatos[idx]["id"],
+                "score": float(s.get("score", 0)),
+                "nota": s.get("nota", ""),
+            })
+    return results
+
+
+def comparar_foto_com_candidatos(
+    uploaded_path: str,
+    candidatos: list[dict],
+    batch_size: int = 14,
+) -> list[dict]:
+    """
+    Compara visualmente uploaded_path contra cada candidato.
+    candidatos: [{id, path, media_type}]
+    Agrupa em lotes de batch_size → 1 chamada Vision por lote.
+    Retorna: [{id, score, nota}]
+    """
+    if not candidatos:
+        return []
+
+    client = _get_client()
+    if not client:
+        return [{"id": c["id"], "score": 0, "nota": "sem_api_key"} for c in candidatos]
+
+    with open(uploaded_path, "rb") as f:
+        uploaded_b64 = base64.standard_b64encode(f.read()).decode("utf-8")
+    uploaded_media_type = _media_type(uploaded_path)
+
+    all_results: list[dict] = []
+    for i in range(0, len(candidatos), batch_size):
+        lote = candidatos[i : i + batch_size]
+        try:
+            results = _comparar_lote_sync(uploaded_b64, uploaded_media_type, lote, client)
+            all_results.extend(results)
+            # Candidatos sem score na resposta → score 0
+            ids_com_score = {r["id"] for r in results}
+            for c in lote:
+                if c["id"] not in ids_com_score:
+                    all_results.append({"id": c["id"], "score": 0, "nota": "sem_resposta"})
+        except Exception as e:
+            for c in lote:
+                all_results.append({"id": c["id"], "score": 0, "nota": f"erro: {e}"})
+
+    return all_results
