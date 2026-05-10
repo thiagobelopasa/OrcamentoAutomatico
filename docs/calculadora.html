@@ -709,8 +709,8 @@ function renderResultado() {
         <div class="match-body">
           <h4 style="font-size:12px">${m.categoria || 'Referência ' + (i+1)}</h4>
           <div class="match-meta">
-            <span class="meta"><b>${m.m_tecido}m</b> tecido</span>
-            <span class="meta"><b>${m.horas_totais}h</b> trabalho</span>
+            <span class="meta"><b>${m.m_tecido != null ? m.m_tecido + 'm' : '—'}</b> tecido</span>
+            <span class="meta"><b>${m.horas_totais != null ? m.horas_totais + 'h' : '—'}</b> trabalho</span>
             ${!semEst ? `<span class="meta">Enc: ${fmt(m.encosto)}</span><span class="meta">Ass: ${fmt(m.assento)}</span>` : ''}
             ${mesTag}
           </div>
@@ -771,27 +771,32 @@ function preencherOrcamento(idx) {
   document.getElementById('refEncosto').textContent = fmt(m.encosto);
   document.getElementById('refAssento').textContent = fmt(m.assento);
   document.getElementById('refBraco').textContent = fmt(m.braco);
-  document.getElementById('refTecido').textContent = `${m.m_tecido} m`;
-  document.getElementById('refHoras').textContent = `${m.horas_totais} h`;
+  document.getElementById('refTecido').textContent = m.m_tecido != null ? `${m.m_tecido} m` : '—';
+  document.getElementById('refHoras').textContent = m.horas_totais != null ? `${m.horas_totais} h` : '—';
 
   // Cliente
   document.getElementById('orcCliente').value = document.getElementById('cliente').value || '';
   document.getElementById('orcTipo').value = document.getElementById('tipo').value || m.categoria || '';
 
-  // Materiais pré-preenchidos
+  // Materiais pré-preenchidos (só coloca tecido se tiver dado real)
   const matBody = document.getElementById('matBody');
   matBody.innerHTML = '';
-  addMatRow('Tecido', m.m_tecido || 17, 'MT', 26);
+  addMatRow('Tecido', m.m_tecido != null ? m.m_tecido : '', 'MT', 26);
   addMatRow('Espuma D33 5cm', 1, 'UN', 280);
   addMatRow('Percinta elástica', 1, 'UN', 80);
   addMatRow('Zíperes e acessórios', 1, 'UN', 20);
 
-  // Horas pré-preenchidas
+  // Horas pré-preenchidas (só divide se tiver dado real)
   const horasBody = document.getElementById('horasBody');
   horasBody.innerHTML = '';
-  const h = m.horas_totais || 32;
-  addHoraRow('JOEL', Math.round(h * 0.6), TAXA_HORA);
-  addHoraRow('DOUGLAS', Math.round(h * 0.4), TAXA_HORA);
+  if (m.horas_totais != null) {
+    const h = m.horas_totais;
+    addHoraRow('JOEL', Math.round(h * 0.6), TAXA_HORA);
+    addHoraRow('DOUGLAS', Math.round(h * 0.4), TAXA_HORA);
+  } else {
+    addHoraRow('JOEL', '', TAXA_HORA);
+    addHoraRow('DOUGLAS', '', TAXA_HORA);
+  }
 
   recalcular();
 

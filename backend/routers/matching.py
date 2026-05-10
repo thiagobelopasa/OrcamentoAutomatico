@@ -313,27 +313,29 @@ async def status_analise(db: Session = Depends(get_db)) -> dict:
 def _projeto_metricas(p: ProjetoORM) -> dict:
     """
     Extrai métricas de orçamento de um projeto.
-    Prioridade: dados_ficha (Vision) → materiais/horas (legado) → defaults.
-    Retorna também flag indicando se vieram da ficha.
+    Prioridade: dados_ficha (Vision) → materiais/horas (legado) → None (sem default).
     """
     df = p.dados_ficha or {}
 
     m_tecido = df.get("metragem_tecido")
     if not m_tecido:
-        m_tecido = 0.0
         for m in (p.materiais or []):
             if "TECIDO" in m.get("nome", "").upper():
-                m_tecido += float(m.get("quantidade", 0))
-    m_tecido = float(m_tecido) if m_tecido else 17.0
+                v = float(m.get("quantidade", 0) or 0)
+                if v > 0:
+                    m_tecido = v
+                    break
+    m_tecido = float(m_tecido) if m_tecido else None  # None = sem dado real
 
     horas = df.get("horas_totais")
     if not horas:
-        horas = float(p.total_horas or 0)
+        horas = float(p.total_horas or 0) or None
         if not horas:
-            horas = sum(float(h.get("horas", 0)) for h in (p.horas_trabalho or []))
-    horas = float(horas) if horas else 32.0
+            soma = sum(float(h.get("horas", 0) or 0) for h in (p.horas_trabalho or []))
+            horas = soma if soma > 0 else None
+    horas = float(horas) if horas else None  # None = sem dado real
 
-    tem_dados_reais = bool(df.get("metragem_tecido") or df.get("horas_totais"))
+    tem_dados_reais = bool(m_tecido or horas)
 
     return {
         "m_tecido": m_tecido,
@@ -515,7 +517,7 @@ async def analisar_completo(
         tipo_peca_upload = (dados_ficha_upload.get("tipo_peca") or "").upper().strip()
         logger.info(f"Estrutura: {estrutura_upload}, tipo_peca: {tipo_peca_upload}")
 
-        # 2) Pool de candidatos: projetos analisados com foto do estofado identificada
+        # 2) Pool: TODOS projetos analisados com imagens (usa TODAS as fotos do card)
         projetos_todos = (
             db.query(ProjetoORM)
             .filter(ProjetoORM.analise_unificada == 1)
@@ -525,31 +527,48 @@ async def analisar_completo(
         banco_real = _projetos_para_banco(projetos_todos)
         banco_map = {b["id"]: b for b in banco_real}
 
-        # Apenas candidatos com foto do estofado para comparação visual
-        candidatos_pool = [p for p in projetos_todos if p.foto_estofado_url]
+        # Expande: cada URL de imagem do card vira 1 candidato individual
+        # id do candidato = "proj_id||seq" — permite agrupar por card depois
+        candidatos_expandidos = []  # [{cand_id, proj_id, url}]
+        for p in projetos_todos:
+            urls = [u for u in (p.urls_anexos or []) if _url_eh_imagem(u)]
+            if not urls:
+                continue
+            # Pré-filtro por tipo_peca (só se detectado e pool grande)
+            if tipo_peca_upload and len(projetos_todos) > 10:
+                tp = (p.dados_ficha or {}).get("tipo_peca") or ""
+                if tp.upper() != tipo_peca_upload:
+                    continue
+            for seq, url in enumerate(urls):
+                candidatos_expandidos.append({
+                    "cand_id": f"{p.id}||{seq}",
+                    "proj_id": p.id,
+                    "url": url,
+                })
 
-        # Pré-filtro por tipo_peca: se sabemos que é POLTRONA, só compara com POLTRONA
-        if tipo_peca_upload and len(candidatos_pool) > 10:
-            filtrados = [
-                p for p in candidatos_pool
-                if p.dados_ficha and (p.dados_ficha.get("tipo_peca") or "").upper() == tipo_peca_upload
-            ]
-            if len(filtrados) >= 3:
-                candidatos_pool = filtrados
-                logger.info(f"Pré-filtro tipo_peca={tipo_peca_upload}: {len(filtrados)} candidatos")
+        # Se pré-filtro zerou o pool, usa todos sem filtrar
+        if not candidatos_expandidos:
+            for p in projetos_todos:
+                urls = [u for u in (p.urls_anexos or []) if _url_eh_imagem(u)]
+                for seq, url in enumerate(urls):
+                    candidatos_expandidos.append({
+                        "cand_id": f"{p.id}||{seq}",
+                        "proj_id": p.id,
+                        "url": url,
+                    })
 
-        # Limita a 300 candidatos (custo controlado com Sonnet em lotes de 10)
-        if len(candidatos_pool) > 300:
-            candidatos_pool = candidatos_pool[:300]
+        # Cap total de imagens para controlar custo (200 imagens ≈ 20 lotes Sonnet)
+        if len(candidatos_expandidos) > 200:
+            candidatos_expandidos = candidatos_expandidos[:200]
 
-        # 3) Baixa fotos dos candidatos em paralelo (1 cliente compartilhado)
+        # 3) Baixa todas as imagens candidatas em paralelo
         oauth = _trello_oauth_header()
         base_dir = Path("./temp_uploads")
         base_dir.mkdir(exist_ok=True)
         sem = asyncio.Semaphore(8)
 
-        async def _baixar_candidato(proj: ProjetoORM, idx: int, hc: httpx.AsyncClient):
-            url = proj.foto_estofado_url
+        async def _baixar_url(entry: dict, idx: int, hc: httpx.AsyncClient):
+            url = entry["url"]
             async with sem:
                 try:
                     headers = {"Authorization": oauth} if "trello.com" in url else {}
@@ -559,42 +578,54 @@ async def analisar_completo(
                     ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
                     if ct and not ct.startswith("image/"):
                         return None
-                    p = base_dir / f"cand_{proj.id}_{idx}.jpg"
+                    p = base_dir / f"cand_{entry['proj_id']}_{idx}.jpg"
                     with open(p, "wb") as fh:
                         fh.write(resp.content)
-                    return {"id": proj.id, "path": str(p), "media_type": ct or "image/jpeg"}
+                    return {
+                        "id": entry["cand_id"],
+                        "proj_id": entry["proj_id"],
+                        "path": str(p),
+                        "media_type": ct or "image/jpeg",
+                    }
                 except Exception as e:
-                    logger.warning(f"Falha download candidato {url[:50]}: {e}")
+                    logger.warning(f"Falha download {url[:50]}: {e}")
                     return None
 
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
-            tasks = [_baixar_candidato(p, i, hc) for i, p in enumerate(candidatos_pool)]
+            tasks = [_baixar_url(e, i, hc) for i, e in enumerate(candidatos_expandidos)]
             raw_results = await asyncio.gather(*tasks)
         candidatos_com_path = [r for r in raw_results if r is not None]
         candidatos_paths = [c["path"] for c in candidatos_com_path]
-        logger.info(f"Comparação visual: {len(candidatos_com_path)} candidatos baixados")
+        logger.info(f"Comparação visual: {len(candidatos_com_path)} imagens de {len(projetos_todos)} cards")
 
-        # 4) Comparação visual em lotes (1 chamada Vision por lote de 14)
+        # 4) Comparação visual em lotes de 10 (Sonnet)
         scores_list = await asyncio.to_thread(
             card_analyzer.comparar_foto_com_candidatos,
             str(temp_path),
             candidatos_com_path,
         )
-        score_map = {s["id"]: s for s in scores_list}
 
-        # 5) Monta resultados
+        # 5) Agrupa por card, fica com a MAIOR similaridade por card
+        from collections import defaultdict
+        scores_por_card: dict = defaultdict(list)
+        for s in scores_list:
+            proj_id = s["id"].split("||")[0]
+            scores_por_card[proj_id].append(s)
+
+        # 6) Monta resultados: 1 entry por card com melhor score
         matches = []
-        for proj in candidatos_pool:
-            score_data = score_map.get(proj.id)
-            if not score_data:
+        for proj in projetos_todos:
+            card_scores = scores_por_card.get(proj.id)
+            if not card_scores:
                 continue
+            best = max(card_scores, key=lambda x: x["score"])
             b = banco_map.get(proj.id, {})
             metricas = _projeto_metricas(proj)
             matches.append({
                 "entrada_id": proj.id,
                 "categoria": proj.nome,
-                "similaridade_pct": round(score_data["score"], 1),
-                "similaridade_nota": score_data.get("nota", ""),
+                "similaridade_pct": round(best["score"], 1),
+                "similaridade_nota": best.get("nota", ""),
                 "m_tecido": metricas["m_tecido"],
                 "horas_totais": metricas["horas_totais"],
                 "tem_dados_reais": metricas["tem_dados_reais"],
