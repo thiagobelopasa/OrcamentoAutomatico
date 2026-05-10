@@ -219,5 +219,5 @@ def url_download_drive_publico(file_id: str) -> str:
 
 
 def url_view_drive_publico(file_id: str) -> str:
-    """URL de visualização pública do Drive (para armazenar como foto_url)."""
-    return f"https://drive.google.com/uc?id={file_id}&export=view"
+    """URL de thumbnail público do Drive — funciona diretamente como <img src>."""
+    return f"https://drive.google.com/thumbnail?id={file_id}&sz=w400"

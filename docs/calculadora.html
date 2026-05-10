@@ -684,11 +684,13 @@ function renderResultado() {
   (lastAnalysis.top_matches || []).forEach((m, i) => {
     const pct = m.similaridade_pct;
     const cor = pct>=80 ? '#2D6A4F' : pct>=60 ? '#856404' : '#991B1B';
-    // Usa proxy para imagens do Trello; ignora URLs de exemplo
+    // Usa proxy para imagens do Trello; thumbnail para Drive; ignora URLs de exemplo
     const hasFoto = m.foto_url && !m.foto_url.includes('exemplo.com');
     const fotoSrc = hasFoto && m.foto_url.includes('trello.com')
       ? `${API}/matching/proxy/imagem?url=${encodeURIComponent(m.foto_url)}`
-      : (hasFoto ? m.foto_url : '');
+      : hasFoto && m.foto_url.includes('drive.google.com')
+        ? m.foto_url.replace(/drive\.google\.com\/uc\?id=([^&]+).*/, 'drive.google.com/thumbnail?id=$1&sz=w300')
+        : (hasFoto ? m.foto_url : '');
     const semEst = m.sem_estrutura;
     const trelloLink = m.trello_card_url ? `<a href="${m.trello_card_url}" target="_blank" style="font-size:10px;color:var(--brown-light);text-decoration:none">↗ Ver no Trello</a>` : '';
     const mesTag = m.mes_entrega ? `<span class="meta">${m.mes_entrega} ${m.ano_entrega||''}</span>` : '';
@@ -749,14 +751,16 @@ function preencherOrcamento(idx) {
   };
   const fmt = v => tipos[v] || v || '?';
 
-  // Foto referência (com proxy para Trello)
+  // Foto referência (com proxy para Trello, thumbnail para Drive)
   const hasFoto = m.foto_url && !m.foto_url.includes('exemplo.com');
   const ri = document.getElementById('refFoto');
   const re = document.getElementById('refFotoEmpty');
   if (hasFoto) {
-    ri.src = m.foto_url && m.foto_url.includes('trello.com')
+    ri.src = m.foto_url.includes('trello.com')
       ? `${API}/matching/proxy/imagem?url=${encodeURIComponent(m.foto_url)}`
-      : m.foto_url;
+      : m.foto_url.includes('drive.google.com')
+        ? m.foto_url.replace(/drive\.google\.com\/uc\?id=([^&]+).*/, 'drive.google.com/thumbnail?id=$1&sz=w400')
+        : m.foto_url;
     ri.style.display = 'block'; re.style.display = 'none';
   } else {
     ri.style.display = 'none'; re.style.display = 'flex';
