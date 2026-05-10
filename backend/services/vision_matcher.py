@@ -149,6 +149,72 @@ Responda APENAS com JSON, sem markdown.
             }
 
     @staticmethod
+    def extrair_dados_ficha(image_path: str) -> Dict[str, Any]:
+        """
+        Extrai dados de custo/produção de uma ficha ou orçamento.
+        Chamado quando descrever_foto retorna tudo 'desconhecido' (provável ficha).
+        """
+        client = _get_client()
+        if not client:
+            return {"eh_ficha": False}
+
+        try:
+            with open(image_path, "rb") as img_file:
+                image_data = base64.standard_b64encode(img_file.read()).decode("utf-8")
+
+            ext = Path(image_path).suffix.lower()
+            media_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
+
+            prompt = """Analise esta imagem. Pode ser uma ficha de produção, orçamento ou pedido de estofado.
+
+Se for uma ficha/formulário/orçamento (não uma foto de sofá), extraia:
+{
+  "eh_ficha": true,
+  "metragem_tecido": número ou null,
+  "horas_totais": número ou null,
+  "valor_espuma": número ou null,
+  "valor_mo": número ou null,
+  "valor_total": número ou null,
+  "quantidade_pecas": número ou null,
+  "tipo_peca": "POLTRONA|SOFÁ|CADEIRA|etc ou null",
+  "cor_tecido": "código ou descrição ou null",
+  "trabalhadores": [{"nome": "...", "horas": número}]
+}
+
+Regras:
+- "mt", "m", "metros" → metragem tecido. "Metragem Tecido: 5,28" → 5.28
+- "hr", "h", "horas" → horas. Some todos os trabalhadores para horas_totais
+- "Espuma", "Fibra" → valor_espuma. "M.O", "Mão de Obra" → valor_mo
+- Na ficha impressa (digitada): campo "Metragem Tecido" é a fonte principal
+- Na ficha manual (manuscrita): leia os valores escritos à mão
+- Se for CLARAMENTE foto de sofá/poltrona (móvel), retorne {"eh_ficha": false}
+
+Retorne APENAS JSON válido, sem markdown."""
+
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=600,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
+                        {"type": "text", "text": prompt}
+                    ]
+                }]
+            )
+
+            text = message.content[0].text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+
+            return json.loads(text)
+
+        except Exception as e:
+            return {"eh_ficha": False, "erro": str(e)}
+
+    @staticmethod
     def calcular_similaridade(descricao_foto: Dict[str, str],
                             entrada_historica: Dict[str, Any]) -> float:
         """

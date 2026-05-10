@@ -153,14 +153,58 @@ async def _run_batch(projeto_ids: List[str]):
                         VisionMatcher.descrever_foto, str(temp_path)
                     )
 
+                    enc = descricao.get("encosto", "desconhecido")
+                    ass = descricao.get("assento", "desconhecido")
+                    brc = descricao.get("braco", "desconhecido")
+
                     visao_fotos.append({
                         "url": foto_url,
-                        "encosto": descricao.get("encosto", "desconhecido"),
-                        "assento": descricao.get("assento", "desconhecido"),
-                        "braco": descricao.get("braco", "desconhecido"),
+                        "encosto": enc,
+                        "assento": ass,
+                        "braco": brc,
                         "confianca": descricao.get("confianca", "média"),
                         "descricao": descricao.get("descricao_resumida", ""),
                     })
+
+                    # Se todos campos "desconhecido" → provável ficha de produção
+                    # Tenta extrair metragem, horas e custos reais
+                    if enc == "desconhecido" and ass == "desconhecido" and brc == "desconhecido":
+                        try:
+                            ficha = await asyncio.to_thread(
+                                VisionMatcher.extrair_dados_ficha, str(temp_path)
+                            )
+                            if ficha.get("eh_ficha"):
+                                mats = list(projeto.materiais or [])
+                                horas = list(projeto.horas_trabalho or [])
+
+                                # Metragem de tecido
+                                m_tecido = ficha.get("metragem_tecido")
+                                if m_tecido and not any("TECIDO" in m.get("nome","").upper() for m in mats):
+                                    mats.append({"nome": "TECIDO", "quantidade": m_tecido, "unidade": "MT"})
+
+                                # Espuma
+                                val_espuma = ficha.get("valor_espuma")
+                                if val_espuma and not any("ESPUMA" in m.get("nome","").upper() for m in mats):
+                                    mats.append({"nome": "ESPUMA", "quantidade": 1, "unidade": "UN",
+                                                 "observacoes": f"R${val_espuma:.0f}"})
+
+                                # Horas de trabalho
+                                trabalhadores = ficha.get("trabalhadores") or []
+                                if trabalhadores and not horas:
+                                    for t in trabalhadores:
+                                        horas.append({"pessoa": t.get("nome","EQUIPE"),
+                                                      "horas": float(t.get("horas", 0))})
+                                elif ficha.get("horas_totais") and not horas:
+                                    horas.append({"pessoa": "EQUIPE",
+                                                  "horas": float(ficha["horas_totais"])})
+
+                                if mats != list(projeto.materiais or []):
+                                    projeto.materiais = mats
+                                if horas != list(projeto.horas_trabalho or []):
+                                    projeto.horas_trabalho = horas
+                                    projeto.total_horas = sum(h["horas"] for h in horas)
+                        except Exception as ef:
+                            logger.warning(f"Falha ao extrair ficha: {ef}")
 
                     await asyncio.sleep(0.5)
 
@@ -202,7 +246,6 @@ async def analisar_historico(
 
     todos = (
         db.query(ProjetoORM)
-        .filter(ProjetoORM.trello_card_id.isnot(None))
         .order_by(ProjetoORM.data_criacao.desc())
         .limit(limite)
         .all()
@@ -240,7 +283,7 @@ async def parar_analise() -> dict:
 @router.get("/analisar-historico/status")
 async def status_analise(db: Session = Depends(get_db)) -> dict:
     """Retorna progresso do batch + totais do banco."""
-    todos = db.query(ProjetoORM).filter(ProjetoORM.trello_card_id.isnot(None)).all()
+    todos = db.query(ProjetoORM).all()
     total_banco = len(todos)
     ja_analisados = sum(1 for p in todos if p.visao_fotos)
     total_fotos = sum(len(p.visao_fotos or []) for p in todos)
@@ -375,7 +418,6 @@ async def analisar_completo(
 
         projetos = (
             db.query(ProjetoORM)
-            .filter(ProjetoORM.trello_card_id.isnot(None))
             .order_by(ProjetoORM.data_criacao.desc())
             .limit(500)
             .all()

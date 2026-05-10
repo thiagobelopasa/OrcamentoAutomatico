@@ -102,7 +102,7 @@ async def _auto_vision_batch():
     db = SessionLocal()
     try:
         from database import ProjetoORM
-        todos = db.query(ProjetoORM).filter(ProjetoORM.trello_card_id.isnot(None)).all()
+        todos = db.query(ProjetoORM).all()
         if not todos:
             return
         ja = sum(1 for p in todos if p.visao_fotos)
