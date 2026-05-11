@@ -514,39 +514,38 @@ async def analisar_completo(
         banco_real = _projetos_para_banco(projetos_todos)
         banco_map = {b["id"]: b for b in banco_real}
 
-        # Expande: cada URL de imagem do card vira 1 candidato individual
-        # id do candidato = "proj_id||seq" — permite agrupar por card depois
+        # Usa APENAS foto_estofado_url — a foto que o Vision escolheu como melhor
+        # representação do estofado. Evita fichas/documentos de outros cards
+        # contaminarem a comparação com scores falso-positivos.
         candidatos_expandidos = []  # [{cand_id, proj_id, url}]
         for p in projetos_todos:
-            urls = [u for u in (p.urls_anexos or []) if _url_eh_imagem(u)]
-            if not urls:
-                continue
+            if not p.foto_estofado_url:
+                continue  # sem foto identificada → não entra no pool
             # Pré-filtro por tipo_peca (só se detectado e pool grande)
             if tipo_peca_upload and len(projetos_todos) > 10:
                 tp = (p.dados_ficha or {}).get("tipo_peca") or ""
                 if tp.upper() != tipo_peca_upload:
                     continue
-            for seq, url in enumerate(urls):
-                candidatos_expandidos.append({
-                    "cand_id": f"{p.id}||{seq}",
-                    "proj_id": p.id,
-                    "url": url,
-                })
+            candidatos_expandidos.append({
+                "cand_id": f"{p.id}||0",
+                "proj_id": p.id,
+                "url": p.foto_estofado_url,
+            })
 
-        # Se pré-filtro zerou o pool, usa todos sem filtrar
+        # Se pré-filtro zerou o pool, usa todos sem filtrar por tipo_peca
         if not candidatos_expandidos:
             for p in projetos_todos:
-                urls = [u for u in (p.urls_anexos or []) if _url_eh_imagem(u)]
-                for seq, url in enumerate(urls):
-                    candidatos_expandidos.append({
-                        "cand_id": f"{p.id}||{seq}",
-                        "proj_id": p.id,
-                        "url": url,
-                    })
+                if not p.foto_estofado_url:
+                    continue
+                candidatos_expandidos.append({
+                    "cand_id": f"{p.id}||0",
+                    "proj_id": p.id,
+                    "url": p.foto_estofado_url,
+                })
 
-        # Cap total de imagens para controlar custo (200 imagens ≈ 20 lotes Sonnet)
-        if len(candidatos_expandidos) > 200:
-            candidatos_expandidos = candidatos_expandidos[:200]
+        # Cap de segurança
+        if len(candidatos_expandidos) > 300:
+            candidatos_expandidos = candidatos_expandidos[:300]
 
         # 3) Baixa todas as imagens candidatas em paralelo
         oauth = _trello_oauth_header()
