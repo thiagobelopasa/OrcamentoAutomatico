@@ -25,10 +25,22 @@ except ImportError:
 _PROMPT = """Você analisa TODAS as imagens de UM card do Trello (projeto de reforma de estofado).
 
 Cada card costuma ter:
-- 1 foto do estofado (sofá/poltrona) — usada para comparação visual
+- 1 foto do estofado (sofá/poltrona/puff/banco) — usada para comparação visual
 - 1-2 fichas (impressas ou manuscritas) — contêm metragem, horas, custos
 
 TAREFA: analise todas as imagens e retorne UM JSON consolidado.
+
+⚠️ TIPOS ESPECIAIS:
+- PUFF/BANCO: móvel baixo sem encosto (ou com encosto mínimo)
+  → encosto = "liso" ou "duas_almofadas" se tiver dois paninhos empilhados
+  → assento = "lisa_costura" (puffs são lisos)
+  → braco = "sem_braco" (puffs modular/banco costumam não ter braço real)
+
+- POLTRONA: 1 lugar com encosto + braços
+  → braco = "quadrado_boxy" ou "reto_costura" (tem braços VISÍVEIS)
+
+- SOFÁ: múltiplos lugares
+  → modulos = "2", "3", "4+"
 
 ESTRUTURA DE RESPOSTA:
 {
@@ -38,17 +50,22 @@ ESTRUTURA DE RESPOSTA:
     "assento": "capitone_quadrado|ondas_gomos|gomos_verticais|lisa_costura|desconhecido",
     "braco": "quadrado_boxy|reto_costura|aluminio|sem_braco|desconhecido",
     "modulos": "1|2|3|4+",
+    "tipo_movel": "SOFA|POLTRONA|PUFF|BANCO|CHAISE|desconhecido",
     "descricao_resumida": "1-2 linhas descrevendo a estrutura visual",
     "confianca": "alta|média|baixa"
   },
   "dados_ficha": {
+    "numero_orcamento": "string ou null",
+    "cliente": "nome do cliente ou null",
+    "data_orcamento": "DD/MM/AAAA ou null",
+    "descricao_servico": "texto completo do serviço ou null",
     "metragem_tecido": número ou null,
     "horas_totais": número ou null,
     "valor_espuma": número ou null,
     "valor_mo": número ou null,
     "valor_total": número ou null,
     "quantidade_pecas": número ou null,
-    "tipo_peca": "POLTRONA|SOFÁ|CADEIRA|... ou null",
+    "tipo_peca": "POLTRONA|SOFÁ|CADEIRA|ALMOFADA|PUFF|BANCO|CADEIRÃO|... ou null",
     "cor_tecido": "código/descrição ou null",
     "trabalhadores": [{"nome": "...", "horas": número}] ou [],
     "confianca": "alta|média|baixa|nenhuma"
@@ -59,29 +76,57 @@ ESTRUTURA DE RESPOSTA:
 REGRAS:
 1. foto_estofado_index é o índice (0-based) da imagem que MELHOR mostra o estofado.
    Se houver várias fotos, escolha a que mostra estrutura mais completa
-   (encosto + assento + braço visíveis).
+   (encosto + assento + braço visíveis para sofás/poltronas, ou encosto + assento para puffs).
 
 2. Capitonê = padrão DIAGONAL/CRUZADO (XX, formando losangos).
    Duas almofadas empilhadas (costura horizontal única) NÃO é capitonê.
 
-3. Em fichas digitadas (impressas):
-   - "Metragem Tecido: 5,28" → metragem_tecido = 5.28
-   - "M.O", "Mão de Obra" → valor_mo
-   - "Espuma" → valor_espuma
+3. **PUFF/BANCO DETECTION** (IMPORTANTE):
+   - PUFF: assento liso + encosto ausente/liso/mínimo + braço "sem_braco"
+   - BANCO: como puff mas com possível estrutura de metal/madeira visível
+   - Se a foto mostra um móvel SEM braços laterais visíveis E o assento é liso,
+     marca como braco="sem_braco" (não "quadrado_boxy" ou "reto_costura")
 
-4. Em fichas manuscritas: leia os valores escritos à mão.
+4. EXTRAINDO DADOS DA FICHA — há dois modelos de ficha:
 
-5. horas_totais = SOMENTE horas de trabalho (ex: 6, 8.5, 32). NUNCA use um valor monetário.
-   "R$ 1.213" ou "1213" após "M.O" ou "Espuma" é DINHEIRO, não horas.
-   Horas vêm de campos como "Horas", "H.T", nome de trabalhador + número pequeno (< 200).
-   Soma de horas de TODOS os trabalhadores listados.
+   MODELO A — Estofados Imperial (formulário manuscrito antigo):
+   - Campo "ORÇAMENTO" ou número em destaque (ex: 21848) → numero_orcamento
+   - Campo "DATA" → data_orcamento
+   - Campo "Cliente" → cliente
+   - Coluna "Discriminação": lista de itens com preços
+     → linha com "Tec", "Tecido", "conjunto" + valor R$ → valor_tecido (não é horas)
+     → linha com "Espuma", "ESPUMAS" + valor R$ → valor_espuma
+     → linha com "M.O", "Mão de Obra" + valor R$ → valor_mo
+     → campo "TOTAL R$" → valor_total
+   - Não há campo de horas neste modelo — horas_totais = null
 
-6. Se NÃO houver foto de estofado: foto_estofado_index = null,
+   MODELO B — Gilmar Pasa (formulário impresso digital):
+   - Campo "Orçamento" (data) → data_orcamento
+   - Campo "Cliente" → cliente
+   - Campo "Descrição/Pedido:" (número) → numero_orcamento
+   - Campo "Código Descrição": texto do serviço → descricao_servico
+   - RODAPÉ (campos pré-impressos preenchidos a lápis ou caneta):
+     → "Metragem Tecido: ___" → metragem_tecido (ex: "20 m.t." = 20, "11,15 mts" = 11.15)
+     → "Início e Término Trabalho: ___" → ESTE É O CAMPO DE HORAS DOS FUNCIONÁRIOS
+       Leia o valor escrito e o nome após ele. Ex: "24:00 hrs - 1pt 2/5:50 hrs Gilmari"
+       ou "2:20 hs Karolyna" ou "0,30 min Karolyna"
+       → converta para horas decimais: "2:20 hs" = 2.33, "0,30 min" = 0.5 (30 min)
+       → extraia nome do funcionário para trabalhadores[]
+
+5. horas_totais = SOMENTE horas de trabalho, NUNCA valor monetário.
+   - Valores R$ após "M.O", "Espuma", preços unitários = DINHEIRO, ignore para horas
+   - Horas válidas: campo "Início e Término Trabalho", "Horas", valores pequenos (< 200) próximos a nomes de pessoas
+   - Soma de todos os trabalhadores listados
+
+6. metragem_tecido: valor em metros. "20 m.t." = 20, "11,15 mts" = 11.15, "0,30 m" = 0.30
+   Vírgula = separador decimal no Brasil: "1,5" = 1.5
+
+7. Se NÃO houver foto de estofado: foto_estofado_index = null,
    estrutura.confianca = "nenhuma", todos os campos de estrutura = "desconhecido".
 
-7. Se NÃO houver ficha: dados_ficha.confianca = "nenhuma", campos numéricos = null.
+8. Se NÃO houver ficha: dados_ficha.confianca = "nenhuma", campos numéricos = null.
 
-8. Se uma única imagem contém TANTO uma foto pequena do estofado QUANTO uma ficha
+9. Se uma única imagem contém TANTO uma foto pequena do estofado QUANTO uma ficha
    (montagem), priorize ela como foto_estofado_index e ainda extraia dados_ficha.
 
 Responda APENAS o JSON, sem markdown, sem ``` blocks."""
@@ -193,12 +238,17 @@ def _normalize(data: dict, image_urls: list[str]) -> dict[str, Any]:
         "assento": estrutura.get("assento") or "desconhecido",
         "braco": estrutura.get("braco") or "desconhecido",
         "modulos": str(estrutura.get("modulos") or ""),
+        "tipo_movel": estrutura.get("tipo_movel") or "desconhecido",
         "descricao_resumida": estrutura.get("descricao_resumida") or "",
         "confianca": estrutura.get("confianca") or "nenhuma",
     }
 
     df = data.get("dados_ficha") or {}
     dados_ficha = {
+        "numero_orcamento": df.get("numero_orcamento"),
+        "cliente": df.get("cliente"),
+        "data_orcamento": df.get("data_orcamento"),
+        "descricao_servico": df.get("descricao_servico"),
         "metragem_tecido": _safe_num(df.get("metragem_tecido")),
         "horas_totais": _safe_num(df.get("horas_totais")),
         "valor_espuma": _safe_num(df.get("valor_espuma")),
@@ -236,10 +286,15 @@ def _empty_result(reason: str) -> dict[str, Any]:
             "assento": "desconhecido",
             "braco": "desconhecido",
             "modulos": "",
+            "tipo_movel": "desconhecido",
             "descricao_resumida": "",
             "confianca": "nenhuma",
         },
         "dados_ficha": {
+            "numero_orcamento": None,
+            "cliente": None,
+            "data_orcamento": None,
+            "descricao_servico": None,
             "metragem_tecido": None,
             "horas_totais": None,
             "valor_espuma": None,
@@ -260,28 +315,45 @@ _COMPARISON_PROMPT = """Você é especialista em reforma de estofados. Compare a
 REFERÊNCIA: primeira imagem (foto do cliente que precisa de orçamento).
 CANDIDATOS: demais imagens (projetos históricos concluídos), numerados a partir de 1.
 
-Para cada candidato, dê pontuação de SIMILARIDADE VISUAL (0-100) com a referência:
-- 90-100: idêntico ou antes/depois do mesmo objeto
-- 70-89: mesmo modelo, variações menores (cor, módulo adicional)
-- 50-69: estilo semelhante mas com diferença clara em 1 característica principal
-- 20-49: mesmo tipo genérico (sofá/poltrona) mas estrutura visivelmente diferente
-- 0-19: completamente diferente em tipo ou forma
+CRITÉRIO DE PONTUAÇÃO — Foque na ESTRUTURA DE FORMA, não em cor/material:
 
-Analise DETALHADAMENTE:
-1. Tipo de assento: capitonê diagonal (losangos), gomos/ondas, liso, lisa com costura
-2. Tipo de encosto: 2 almofadas empilhadas, capitonê, gomos verticais, reto liso
-3. Modelo de braço: boxy quadrado, reto com costura, alumínio/madeira, sem braço
-4. Quantidade de módulos/lugares
-5. Porte geral: poltrona pequena vs sofá grande
+90-100:
+- Mesma foto (diferentes ângulos/iluminação do MESMO objeto)
+- Antes/depois do MESMO sofá/poltrona
+- Variação mínima: mesma estrutura, só mudou cor/tecido
 
-Dois sofás retráteis parecidos podem ter costuras diferentes → score < 100.
-Antes e depois do MESMO sofá = score 100.
+75-89:
+- Mesmo modelo/design: mesmos padrões (encosto, assento, braço)
+- Tolerância: pequenas variações em módulos ou dimensões
+
+50-74:
+- Estrutura similar mas com 1-2 diferenças nítidas
+- Ex: mesmo assento, encosto diferente
+
+25-49:
+- Tipo genérico similar (ambos sofás/poltronas)
+- Mas estrutura claramente diferente em vários aspectos
+
+0-24:
+- Diferente demais (ex: poltrona vs sofá retratilizável)
+
+ANÁLISE ESTRUTURAL:
+1. **ASSENTO**: capitonê diagonal (XX), gomos/ondas, liso com costura, lisa pura
+2. **ENCOSTO**: 2 almofadas empilhadas, capitonê, gomos verticais, reto liso
+3. **BRAÇO**: boxy quadrado, reto com costura, alumínio visível, sem braço
+4. **MÓDULOS**: 1 lugar, 2 lugares, 3 lugares, 4+ lugares
+5. **PORTE**: poltrona pequena, sofá médio, sofá grande, chaise
+
+⚠️ **IMPORTANTE**:
+- Mesma foto com compressão JPEG diferente = 95-100 (não reduza só porque pixel diferente)
+- Foto do mesmo estofado em ângulos diferentes = 95-100
+- Mesmo modelo mas cor diferente = 85-95 (mudou só o tecido)
 
 Responda APENAS este JSON, sem markdown:
-{"scores": [{"i": 1, "score": 85, "nota": "mesmo gomos no assento, braço diferente"}, ...]}
+{"scores": [{"i": 1, "score": 85, "nota": "mesmo gomos assento + encosto empilhado, braço diferente"}, ...]}
 
-"i" é o número do candidato (1 = segundo image_block).
-Inclua um objeto para CADA candidato recebido."""
+"i" = número do candidato (1 = segundo image).
+Inclua score para CADA candidato."""
 
 
 def _comparar_lote_sync(
@@ -335,41 +407,127 @@ def _comparar_lote_sync(
     return results
 
 
+def encontrar_hash_duplicatas(
+    uploaded_path: str,
+    candidatos: list[dict],
+    threshold_exato: float = 0.98,
+    threshold_perceptual: float = 0.85,
+) -> list[dict]:
+    """
+    Encontra duplicatas exatas ou perceptuais (foto extraída do banco).
+    Muito mais rápido que Vision — economiza chamadas à API.
+
+    Estratégia:
+    1. Hash exato (SHA256) — detecta arquivo idêntico
+    2. Perceptual hash (dhash) — detecta mesma foto com compressão diferente
+
+    Returns:
+        [{id, score, nota, hash_method}] para duplicatas encontradas
+        [] se nenhuma duplicata
+    """
+    from services.image_dedup import get_image_hash, hamming_distance
+
+    try:
+        uploaded_hash = get_image_hash(uploaded_path, use_perceptual=False)  # exato primeiro
+        results = []
+
+        for cand in candidatos:
+            try:
+                cand_path = cand.get("path")
+                if not cand_path:
+                    continue
+
+                cand_hash = get_image_hash(cand_path, use_perceptual=False)
+                if not cand_hash:
+                    continue
+
+                # Match exato?
+                if uploaded_hash == cand_hash:
+                    results.append({
+                        "id": cand["id"],
+                        "score": 100.0,
+                        "nota": "duplicata exata (hash idêntico)",
+                        "hash_method": "SHA256_exato",
+                    })
+                    continue
+
+                # Perceptual hash
+                uploaded_dhash = get_image_hash(uploaded_path, use_perceptual=True)
+                cand_dhash = get_image_hash(cand_path, use_perceptual=True)
+                distance = hamming_distance(uploaded_dhash, cand_dhash)
+                max_distance = int(64 * (1 - threshold_perceptual))
+
+                if distance <= max_distance:
+                    score = 100.0 - (distance / 64 * 20)  # 100 → 80 conforme aumenta distância
+                    results.append({
+                        "id": cand["id"],
+                        "score": min(score, 99.0),  # caps em 99% para não confundir com 100%
+                        "nota": f"duplicata perceptual (distância {distance}/64 bits)",
+                        "hash_method": "dhash_perceptual",
+                    })
+            except Exception as e:
+                continue
+
+        return results
+
+    except Exception as e:
+        return []
+
+
 def comparar_foto_com_candidatos(
     uploaded_path: str,
     candidatos: list[dict],
     batch_size: int = 10,
+    check_hash_first: bool = True,
 ) -> list[dict]:
     """
     Compara visualmente uploaded_path contra cada candidato.
     candidatos: [{id, path, media_type}]
-    Agrupa em lotes de batch_size → 1 chamada Vision por lote.
-    Retorna: [{id, score, nota}]
+
+    OTIMIZAÇÃO: Se check_hash_first=True, primeiro procura por duplicatas exatas/perceptuais.
+    Candidatas encontradas retornam imediatamente com score 99-100 (sem Vision).
+
+    Agrupa restantes em lotes de batch_size → 1 chamada Vision (Sonnet) por lote.
+    Retorna: [{id, score, nota}] ordenado por score DESC
     """
     if not candidatos:
         return []
 
+    # Passo 1: Check hash para duplicatas (rápido, sem API)
+    resultados_hash = []
+    candidatos_restantes = candidatos
+    if check_hash_first:
+        resultados_hash = encontrar_hash_duplicatas(uploaded_path, candidatos)
+        if resultados_hash:
+            # Remove candidatos que tiveram match de hash da lista para Vision
+            ids_encontradas = {r["id"] for r in resultados_hash}
+            candidatos_restantes = [c for c in candidatos if c["id"] not in ids_encontradas]
+
+    # Passo 2: Comparação visual com Vision (Sonnet) para restantes
     client = _get_client()
     if not client:
-        return [{"id": c["id"], "score": 0, "nota": "sem_api_key"} for c in candidatos]
+        resultados_vision = [{"id": c["id"], "score": 0, "nota": "sem_api_key"} for c in candidatos_restantes]
+    else:
+        with open(uploaded_path, "rb") as f:
+            uploaded_b64 = base64.standard_b64encode(f.read()).decode("utf-8")
+        uploaded_media_type = _media_type(uploaded_path)
 
-    with open(uploaded_path, "rb") as f:
-        uploaded_b64 = base64.standard_b64encode(f.read()).decode("utf-8")
-    uploaded_media_type = _media_type(uploaded_path)
+        resultados_vision: list[dict] = []
+        for i in range(0, len(candidatos_restantes), batch_size):
+            lote = candidatos_restantes[i : i + batch_size]
+            try:
+                results = _comparar_lote_sync(uploaded_b64, uploaded_media_type, lote, client)
+                resultados_vision.extend(results)
+                # Candidatos sem score na resposta → score 0
+                ids_com_score = {r["id"] for r in results}
+                for c in lote:
+                    if c["id"] not in ids_com_score:
+                        resultados_vision.append({"id": c["id"], "score": 0, "nota": "sem_resposta"})
+            except Exception as e:
+                for c in lote:
+                    resultados_vision.append({"id": c["id"], "score": 0, "nota": f"erro: {e}"})
 
-    all_results: list[dict] = []
-    for i in range(0, len(candidatos), batch_size):
-        lote = candidatos[i : i + batch_size]
-        try:
-            results = _comparar_lote_sync(uploaded_b64, uploaded_media_type, lote, client)
-            all_results.extend(results)
-            # Candidatos sem score na resposta → score 0
-            ids_com_score = {r["id"] for r in results}
-            for c in lote:
-                if c["id"] not in ids_com_score:
-                    all_results.append({"id": c["id"], "score": 0, "nota": "sem_resposta"})
-        except Exception as e:
-            for c in lote:
-                all_results.append({"id": c["id"], "score": 0, "nota": f"erro: {e}"})
-
-    return all_results
+    # Combina resultados: hash (prioridade) + vision
+    todos_resultados = resultados_hash + resultados_vision
+    todos_resultados.sort(key=lambda x: x["score"], reverse=True)
+    return todos_resultados
