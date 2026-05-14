@@ -467,6 +467,9 @@ table tr:last-child td{border-bottom:none}
       <button class="btn btn-outline btn-sm" onclick="verificarStatus()">
         🔄 Atualizar Status
       </button>
+      <button class="btn btn-outline btn-sm" id="btnReanalisar" onclick="reanalisarTrello()" title="Força re-análise de todos os projetos Trello com o prompt mais recente">
+        🔁 Re-analisar Trello
+      </button>
     </div>
 
     <!-- Separador Drive -->
@@ -1058,6 +1061,30 @@ async function pararAnalise() {
     toast('Parada solicitada — aguardando projeto atual', 'ok');
   } catch(e) {
     toast(`Erro: ${e.message}`, 'err');
+  }
+}
+
+async function reanalisarTrello() {
+  if (!confirm('Isso vai re-analisar TODOS os projetos do Trello com o prompt atualizado (extrai horas, nº orçamento, funcionário, etc). Pode demorar. Continuar?')) return;
+  try {
+    document.getElementById('btnReanalisar').disabled = true;
+    document.getElementById('bancoLog').style.display = 'block';
+    document.getElementById('logBox').innerHTML = `<div>[${new Date().toLocaleTimeString('pt-BR')}] Iniciando re-análise do Trello...</div>`;
+
+    const res = await fetch(`${API}/matching/reanalisar-trello`, { method: 'POST' });
+    const d = await res.json();
+
+    if (d.total) {
+      toast(`Re-análise iniciada: ${d.total} projetos (~${d.estimativa_minutos} min)`, 'ok');
+      _pollInterval = setInterval(verificarStatus, 3000);
+      verificarStatus();
+    } else {
+      toast(d.mensagem || 'Resposta inesperada', 'err');
+      document.getElementById('btnReanalisar').disabled = false;
+    }
+  } catch(e) {
+    toast(`Erro: ${e.message}`, 'err');
+    document.getElementById('btnReanalisar').disabled = false;
   }
 }
 

@@ -12,11 +12,17 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from services.vision_matcher import VisionMatcher, BANCO_EXEMPLO
-from services import card_analyzer
+from services import card_analyzer, vision_acuracia_maxima, image_dedup
 from database import get_db, ProjetoORM, SessionLocal, AnaliseProjeto
 
 router = APIRouter(prefix="/matching", tags=["matching"])
 logger = logging.getLogger(__name__)
+
+
+@router.get("/test-version")
+async def test_version():
+    """Test endpoint to verify code is loaded."""
+    return {"version": "2.0", "timestamp": "2026-05-12", "test": True}
 
 # ─── Estado global do batch analysis ───────────────────────────────────────────
 _batch = {
@@ -239,7 +245,7 @@ async def _run_batch(projeto_ids: List[str]):
 @router.post("/analisar-historico")
 async def analisar_historico(
     background_tasks: BackgroundTasks,
-    limite: int = 300,
+    limite: int = 1000,
     db: Session = Depends(get_db)
 ) -> dict:
     """Inicia análise Vision em batch — processa projetos sem visao_fotos."""
@@ -281,6 +287,46 @@ async def analisar_historico(
 async def parar_analise() -> dict:
     _batch["stop_requested"] = True
     return {"mensagem": "Parada solicitada — aguardando projeto atual finalizar"}
+
+
+@router.post("/reanalisar-trello")
+async def reanalisar_trello(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+) -> dict:
+    """Força re-análise Vision de todos os projetos do Trello (proj_*), ignorando análises anteriores."""
+    if _batch["running"]:
+        return {"mensagem": "Análise já em andamento", "status": _batch}
+
+    projetos = (
+        db.query(ProjetoORM)
+        .filter(ProjetoORM.id.like("proj_%"))
+        .all()
+    )
+
+    # Reseta flag para forçar re-análise mesmo em projetos já analisados
+    ids = []
+    for p in projetos:
+        if not p.urls_anexos:
+            continue
+        if not any(_url_eh_imagem(u) for u in p.urls_anexos):
+            continue
+        p.analise_unificada = 0
+        ids.append(p.id)
+
+    db.commit()
+
+    if not ids:
+        return {"mensagem": "Nenhum projeto Trello com imagens encontrado"}
+
+    background_tasks.add_task(_run_batch, ids)
+
+    return {
+        "mensagem": f"Re-análise iniciada para {len(ids)} projetos Trello",
+        "total": len(ids),
+        "estimativa_minutos": round(len(ids) * 0.5, 1),
+        "acompanhe_em": "/matching/analisar-historico/status",
+    }
 
 
 @router.get("/analisar-historico/status")
@@ -683,6 +729,560 @@ async def analisar_completo(
                 Path(cp).unlink(missing_ok=True)
             except Exception:
                 pass
+
+
+@router.post("/analisar-acuracia-maxima")
+async def analisar_acuracia_maxima(
+    file: UploadFile = File(...),
+    top_n: int = 5,
+    db: Session = Depends(get_db)
+) -> dict:
+    """
+    Busca com MÁXIMA ACURÁCIA usando Claude Sonnet.
+    - Análise estrutural precisa com Sonnet
+    - Comparação visual com batch_size=5 (lotes pequenos para melhor atenção)
+    - Retorna confiança explícita por match + emoji indicadores
+    """
+    temp_path = None
+    candidatos_paths: List[str] = []
+    try:
+        temp_path = Path(f"./temp_uploads/{file.filename}")
+        temp_path.parent.mkdir(exist_ok=True)
+        with open(temp_path, "wb") as f:
+            f.write(await file.read())
+
+        # 1) Analisa a foto com MÁXIMA ACURÁCIA (Sonnet, não Haiku)
+        logger.info("Analisando estrutura com Sonnet (máxima acurácia)...")
+        resultado_upload = await asyncio.to_thread(
+            vision_acuracia_maxima.analisar_foto_precisa, str(temp_path)
+        )
+        estrutura_upload = resultado_upload
+
+        # 2) Pool: TODOS projetos analisados
+        projetos_todos = (
+            db.query(ProjetoORM)
+            .filter(ProjetoORM.analise_unificada == 1)
+            .order_by(ProjetoORM.data_criacao.desc())
+            .all()
+        )
+        banco_real = _projetos_para_banco(projetos_todos)
+        banco_map = {b["id"]: b for b in banco_real}
+
+        # Usa APENAS foto_estofado_url
+        candidatos_expandidos = []
+        for p in projetos_todos:
+            if not p.foto_estofado_url:
+                continue
+            candidatos_expandidos.append({
+                "cand_id": f"{p.id}||0",
+                "proj_id": p.id,
+                "url": p.foto_estofado_url,
+            })
+
+        if len(candidatos_expandidos) > 300:
+            candidatos_expandidos = candidatos_expandidos[:300]
+
+        # 3) Baixa candidatas em paralelo
+        oauth = _trello_oauth_header()
+        base_dir = Path("./temp_uploads")
+        base_dir.mkdir(exist_ok=True)
+        sem = asyncio.Semaphore(8)
+
+        async def _baixar_url(entry: dict, idx: int, hc: httpx.AsyncClient):
+            url = entry["url"]
+            async with sem:
+                try:
+                    headers = {"Authorization": oauth} if "trello.com" in url else {}
+                    resp = await hc.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        return None
+                    ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                    if ct and not ct.startswith("image/"):
+                        return None
+                    p = base_dir / f"cand_acc_{entry['proj_id']}_{idx}.jpg"
+                    with open(p, "wb") as fh:
+                        fh.write(resp.content)
+                    return {
+                        "id": entry["cand_id"],
+                        "proj_id": entry["proj_id"],
+                        "orig_url": entry["url"],
+                        "path": str(p),
+                        "media_type": ct or "image/jpeg",
+                    }
+                except Exception as e:
+                    logger.warning(f"Falha download {url[:50]}: {e}")
+                    return None
+
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
+            tasks = [_baixar_url(e, i, hc) for i, e in enumerate(candidatos_expandidos)]
+            raw_results = await asyncio.gather(*tasks)
+        candidatos_com_path = [r for r in raw_results if r is not None]
+        candidatos_paths = [c["path"] for c in candidatos_com_path]
+        url_por_cand = {c["id"]: c["orig_url"] for c in candidatos_com_path}
+        logger.info(f"Comparação precisa (Sonnet batch=5): {len(candidatos_com_path)} imagens")
+
+        # 4) Comparação com Sonnet, batch_size=5, retorna confiança
+        scores_list = await asyncio.to_thread(
+            vision_acuracia_maxima.comparar_fotos_precisa,
+            str(temp_path),
+            candidatos_com_path,
+            batch_size=5,
+        )
+
+        # 5) Agrupa por card, melhor score por card
+        from collections import defaultdict
+        scores_por_card: dict = defaultdict(list)
+        for s in scores_list:
+            proj_id = s["id"].split("||")[0]
+            scores_por_card[proj_id].append(s)
+
+        # 6) Monta resultados com emoji indicators
+        matches = []
+        for proj in projetos_todos:
+            card_scores = scores_por_card.get(proj.id)
+            if not card_scores:
+                continue
+            best = max(card_scores, key=lambda x: x["score"])
+            score = best["score"]
+            confianca = best.get("confianca", 0)
+
+            # Emoji baseado em score + confiança
+            if score >= 90 and confianca >= 90:
+                tipo_match = "🎯 DUPLICATA EXATA"
+            elif score >= 85 and confianca >= 85:
+                tipo_match = "✓ MUITO ALTO MATCH"
+            elif score >= 75 and confianca >= 75:
+                tipo_match = "≈ MATCH CONFIÁVEL"
+            elif score >= 60:
+                tipo_match = "~ SIMILAR"
+            else:
+                tipo_match = "? FRACO"
+
+            b = banco_map.get(proj.id, {})
+            best_foto_url = url_por_cand.get(best["id"]) or b.get("foto_antes_url")
+            metricas = _projeto_metricas(proj)
+            matches.append({
+                "entrada_id": proj.id,
+                "categoria": proj.nome,
+                "score_visual": round(score, 1),
+                "confianca_visual": round(confianca, 1),
+                "tipo_match": tipo_match,
+                "motivo": best.get("motivo", ""),
+                "m_tecido": metricas["m_tecido"],
+                "horas_totais": metricas["horas_totais"],
+                "tem_dados_reais": metricas["tem_dados_reais"],
+                "tipo_peca": metricas["tipo_peca"],
+                "quantidade_pecas": metricas["quantidade_pecas"],
+                "valor_espuma": metricas["valor_espuma"],
+                "valor_mo": metricas["valor_mo"],
+                "custo_historico": 0,
+                "foto_url": best_foto_url,
+                "encosto": b.get("estrutura_encosto"),
+                "assento": b.get("estrutura_assento"),
+                "braco": b.get("estrutura_braco"),
+                "descricao_estrutura": b.get("descricao_estrutura", ""),
+                "trello_card_url": b.get("trello_card_url"),
+                "mes_entrega": b.get("mes_entrega"),
+                "ano_entrega": b.get("ano_entrega"),
+            })
+
+        matches.sort(key=lambda x: (-x["score_visual"], -x["confianca_visual"]))
+        matches = matches[:top_n]
+
+        if not matches:
+            matches = [{
+                "entrada_id": "exemplo",
+                "categoria": "Banco vazio — rode /matching/analisar-historico",
+                "score_visual": 0,
+                "confianca_visual": 0,
+                "tipo_match": "?",
+                "m_tecido": 0, "horas_totais": 0,
+                "tem_dados_reais": False,
+                "foto_url": None,
+            }]
+
+        return {
+            "sucesso": True,
+            "versao": "acuracia-maxima-sonnet",
+            "analise_foto": {
+                "tipo_movel": estrutura_upload.get("tipo_movel"),
+                "encosto": estrutura_upload.get("encosto"),
+                "assento": estrutura_upload.get("assento"),
+                "braco": estrutura_upload.get("braco"),
+                "modulos": estrutura_upload.get("modulos"),
+                "confianca": estrutura_upload.get("confianca"),
+                "descricao_resumida": estrutura_upload.get("descricao_resumida"),
+            },
+            "matches_encontrados": len(matches),
+            "top_matches": matches,
+            "recomendacao": matches[0] if matches else None,
+            "total_no_banco": len(projetos_todos),
+            "total_com_foto": len(candidatos_com_path),
+            "tempo_estimado_segundos": "15-30",
+        }
+
+    except Exception as e:
+        error_msg = f"Erro na análise acurácia máxima: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+        for cp in candidatos_paths:
+            try:
+                Path(cp).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+@router.post("/analisar-completo-v2")
+async def analisar_completo_v2(
+    file: UploadFile = File(...),
+    top_n: int = 5,
+    db: Session = Depends(get_db)
+) -> dict:
+    """
+    Busca BALANCEADA: análise rápida (Haiku) + comparação precisa (Sonnet, batch=5).
+    - Análise estrutural rápida com Haiku (~1s)
+    - Comparação visual com Sonnet em lotes pequenos (batch_size=5)
+    - Retorna top 5 com emoji indicadores + confiança
+    - Custo: ~$0.003/busca (mais barato que acurácia máxima)
+    """
+    temp_path = None
+    candidatos_paths: List[str] = []
+    try:
+        temp_path = Path(f"./temp_uploads/{file.filename}")
+        temp_path.parent.mkdir(exist_ok=True)
+        with open(temp_path, "wb") as f:
+            f.write(await file.read())
+
+        # 1) Análise estrutural RÁPIDA com card_analyzer (Haiku)
+        logger.info("Analisando estrutura com Haiku (rápido)...")
+        resultado_upload = await asyncio.to_thread(
+            card_analyzer.analyze_card, [str(temp_path)], [""]
+        )
+        estrutura_upload = resultado_upload.get("estrutura", {})
+        dados_ficha_upload = resultado_upload.get("dados_ficha", {})
+        tipo_peca_upload = (dados_ficha_upload.get("tipo_peca") or "").upper().strip()
+        confianca_analise = estrutura_upload.get("confianca", "desconhecida")
+        logger.info(f"Estrutura: {estrutura_upload}, tipo_peca: {tipo_peca_upload}")
+
+        # 2) Pool: TODOS projetos analisados
+        projetos_todos = (
+            db.query(ProjetoORM)
+            .filter(ProjetoORM.analise_unificada == 1)
+            .order_by(ProjetoORM.data_criacao.desc())
+            .all()
+        )
+        banco_real = _projetos_para_banco(projetos_todos)
+        banco_map = {b["id"]: b for b in banco_real}
+
+        # Usa APENAS foto_estofado_url
+        candidatos_expandidos = []
+        for p in projetos_todos:
+            if not p.foto_estofado_url:
+                continue
+            # Pré-filtro por tipo_peca se detectado
+            if tipo_peca_upload and len(projetos_todos) > 10:
+                tp = (p.dados_ficha or {}).get("tipo_peca") or ""
+                if tp.upper() != tipo_peca_upload:
+                    continue
+            candidatos_expandidos.append({
+                "cand_id": f"{p.id}||0",
+                "proj_id": p.id,
+                "url": p.foto_estofado_url,
+            })
+
+        # Se pré-filtro zerou, usa todos
+        if not candidatos_expandidos:
+            for p in projetos_todos:
+                if not p.foto_estofado_url:
+                    continue
+                candidatos_expandidos.append({
+                    "cand_id": f"{p.id}||0",
+                    "proj_id": p.id,
+                    "url": p.foto_estofado_url,
+                })
+
+        if len(candidatos_expandidos) > 300:
+            candidatos_expandidos = candidatos_expandidos[:300]
+
+        # 3) Baixa candidatas em paralelo
+        oauth = _trello_oauth_header()
+        base_dir = Path("./temp_uploads")
+        base_dir.mkdir(exist_ok=True)
+        sem = asyncio.Semaphore(8)
+
+        async def _baixar_url(entry: dict, idx: int, hc: httpx.AsyncClient):
+            url = entry["url"]
+            async with sem:
+                try:
+                    headers = {"Authorization": oauth} if "trello.com" in url else {}
+                    resp = await hc.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        return None
+                    ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                    if ct and not ct.startswith("image/"):
+                        return None
+                    p = base_dir / f"cand_v2_{entry['proj_id']}_{idx}.jpg"
+                    with open(p, "wb") as fh:
+                        fh.write(resp.content)
+                    return {
+                        "id": entry["cand_id"],
+                        "proj_id": entry["proj_id"],
+                        "orig_url": entry["url"],
+                        "path": str(p),
+                        "media_type": ct or "image/jpeg",
+                    }
+                except Exception as e:
+                    logger.warning(f"Falha download {url[:50]}: {e}")
+                    return None
+
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
+            tasks = [_baixar_url(e, i, hc) for i, e in enumerate(candidatos_expandidos)]
+            raw_results = await asyncio.gather(*tasks)
+        candidatos_com_path = [r for r in raw_results if r is not None]
+        candidatos_paths = [c["path"] for c in candidatos_com_path]
+        url_por_cand = {c["id"]: c["orig_url"] for c in candidatos_com_path}
+        logger.info(f"Comparação precisa (Sonnet batch=5): {len(candidatos_com_path)} imagens")
+
+        # 4) Comparação com Sonnet batch_size=5
+        scores_list = await asyncio.to_thread(
+            vision_acuracia_maxima.comparar_fotos_precisa,
+            str(temp_path),
+            candidatos_com_path,
+            batch_size=5,
+        )
+
+        # 5) Agrupa por card
+        from collections import defaultdict
+        scores_por_card: dict = defaultdict(list)
+        for s in scores_list:
+            proj_id = s["id"].split("||")[0]
+            scores_por_card[proj_id].append(s)
+
+        # 6) Monta resultados com emoji
+        matches = []
+        for proj in projetos_todos:
+            card_scores = scores_por_card.get(proj.id)
+            if not card_scores:
+                continue
+            best = max(card_scores, key=lambda x: x["score"])
+            score = best["score"]
+            confianca = best.get("confianca", 0)
+
+            # Emoji
+            if score >= 90 and confianca >= 90:
+                tipo_match = "🎯 DUPLICATA EXATA"
+            elif score >= 85 and confianca >= 85:
+                tipo_match = "✓ MUITO ALTO MATCH"
+            elif score >= 75 and confianca >= 75:
+                tipo_match = "≈ MATCH CONFIÁVEL"
+            elif score >= 60:
+                tipo_match = "~ SIMILAR"
+            else:
+                tipo_match = "? FRACO"
+
+            b = banco_map.get(proj.id, {})
+            best_foto_url = url_por_cand.get(best["id"]) or b.get("foto_antes_url")
+            metricas = _projeto_metricas(proj)
+            matches.append({
+                "entrada_id": proj.id,
+                "categoria": proj.nome,
+                "score_visual": round(score, 1),
+                "confianca_visual": round(confianca, 1),
+                "tipo_match": tipo_match,
+                "motivo": best.get("motivo", ""),
+                "m_tecido": metricas["m_tecido"],
+                "horas_totais": metricas["horas_totais"],
+                "tem_dados_reais": metricas["tem_dados_reais"],
+                "tipo_peca": metricas["tipo_peca"],
+                "quantidade_pecas": metricas["quantidade_pecas"],
+                "valor_espuma": metricas["valor_espuma"],
+                "valor_mo": metricas["valor_mo"],
+                "custo_historico": 0,
+                "foto_url": best_foto_url,
+                "encosto": b.get("estrutura_encosto"),
+                "assento": b.get("estrutura_assento"),
+                "braco": b.get("estrutura_braco"),
+                "descricao_estrutura": b.get("descricao_estrutura", ""),
+                "trello_card_url": b.get("trello_card_url"),
+                "mes_entrega": b.get("mes_entrega"),
+                "ano_entrega": b.get("ano_entrega"),
+            })
+
+        matches.sort(key=lambda x: (-x["score_visual"], -x["confianca_visual"]))
+        matches = matches[:top_n]
+
+        if not matches:
+            matches = [{
+                "entrada_id": "exemplo",
+                "categoria": "Banco vazio — rode /matching/analisar-historico",
+                "score_visual": 0,
+                "confianca_visual": 0,
+                "tipo_match": "?",
+                "m_tecido": 0, "horas_totais": 0,
+                "tem_dados_reais": False,
+                "foto_url": None,
+            }]
+
+        return {
+            "sucesso": True,
+            "versao": "completo-v2-balanceado",
+            "analise_foto": {
+                "tipo_movel": estrutura_upload.get("tipo_movel"),
+                "encosto": estrutura_upload.get("encosto"),
+                "assento": estrutura_upload.get("assento"),
+                "braco": estrutura_upload.get("braco"),
+                "modulos": estrutura_upload.get("modulos"),
+                "confianca": confianca_analise,
+                "tipo_peca": tipo_peca_upload or None,
+                "descricao_resumida": estrutura_upload.get("descricao_resumida"),
+            },
+            "matches_encontrados": len(matches),
+            "top_matches": matches,
+            "recomendacao": matches[0] if matches else None,
+            "total_no_banco": len(projetos_todos),
+            "total_com_foto": len(candidatos_com_path),
+            "tempo_estimado_segundos": "2-5",
+        }
+
+    except Exception as e:
+        error_msg = f"Erro na análise v2: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+        for cp in candidatos_paths:
+            try:
+                Path(cp).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+@router.post("/deduplicar-banco")
+async def deduplicar_banco(db: Session = Depends(get_db)) -> dict:
+    """
+    Detecta fotos duplicadas no banco usando hash perceptual (dhash).
+    Retorna grupos de duplicatas agrupadas por similitude.
+    """
+    try:
+        # 1) Busca projetos com foto
+        projetos = (
+            db.query(ProjetoORM)
+            .filter(
+                ProjetoORM.analise_unificada == 1,
+                ProjetoORM.foto_estofado_url != None
+            )
+            .all()
+        )
+
+        if not projetos:
+            return {"sucesso": True, "duplicatas": [], "mensagem": "Nenhum projeto com foto encontrado"}
+
+        logger.info(f"Deduplicação: analisando {len(projetos)} fotos...")
+
+        # 2) Baixa e hasheia todas as fotos
+        base_dir = Path("./temp_uploads/dedup")
+        base_dir.mkdir(exist_ok=True)
+        oauth = _trello_oauth_header()
+
+        hashes_map = {}  # {projeto_id: (hash_value, local_path)}
+
+        async def _baixar_e_hashear(proj: ProjetoORM, idx: int):
+            try:
+                url = proj.foto_estofado_url
+                headers = {"Authorization": oauth} if "trello.com" in url else {}
+                async with httpx.AsyncClient(timeout=15.0) as hc:
+                    resp = await hc.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        return proj.id, None, None
+
+                    # Salva localmente
+                    local_path = base_dir / f"dedup_{proj.id}_{idx}.jpg"
+                    with open(local_path, "wb") as f:
+                        f.write(resp.content)
+
+                    # Gera hash perceptual
+                    hash_val = await asyncio.to_thread(
+                        image_dedup.get_image_hash, str(local_path), True
+                    )
+                    return proj.id, hash_val, str(local_path)
+            except Exception as e:
+                logger.warning(f"Falha dedup {proj.nome}: {e}")
+                return proj.id, None, None
+
+        async with httpx.AsyncClient(timeout=15.0) as hc:
+            tasks = [_baixar_e_hashear(p, i) for i, p in enumerate(projetos)]
+            results = await asyncio.gather(*tasks)
+
+        for proj_id, hash_val, path in results:
+            if hash_val:
+                hashes_map[proj_id] = (hash_val, path)
+
+        logger.info(f"Hashes gerados: {len(hashes_map)}/{len(projetos)}")
+
+        # 3) Agrupa duplicatas (hamming_distance ≤ 5)
+        grupos = []  # [{chave, proj_ids, hashes}]
+        processados = set()
+
+        for proj_id1, (hash1, path1) in hashes_map.items():
+            if proj_id1 in processados:
+                continue
+
+            grupo = {"projeto_principal": proj_id1, "hash": hash1, "duplicatas": []}
+            processados.add(proj_id1)
+
+            for proj_id2, (hash2, path2) in hashes_map.items():
+                if proj_id2 in processados or proj_id2 == proj_id1:
+                    continue
+
+                # Calcula distância de Hamming
+                try:
+                    dist = await asyncio.to_thread(
+                        image_dedup.hamming_distance, hash1, hash2
+                    )
+                    if dist <= 5:  # Threshold: ≤5 bits diferentes = duplicata
+                        grupo["duplicatas"].append({
+                            "projeto_id": proj_id2,
+                            "hash": hash2,
+                            "distancia_hamming": dist,
+                            "nome": next((p.nome for p in projetos if p.id == proj_id2), "desconhecido"),
+                            "url": next((p.foto_estofado_url for p in projetos if p.id == proj_id2), ""),
+                        })
+                        processados.add(proj_id2)
+                except Exception:
+                    pass
+
+            if grupo["duplicatas"]:
+                grupos.append(grupo)
+
+        # 4) Limpa temp
+        for _, path in hashes_map.values():
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        return {
+            "sucesso": True,
+            "total_fotos_analisadas": len(hashes_map),
+            "grupos_duplicatas": len(grupos),
+            "duplicatas": grupos,
+            "recomendacao": "Revise manualmente e considere unificar projetos duplicados",
+        }
+
+    except Exception as e:
+        error_msg = f"Erro na deduplicação: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @router.get("/banco-exemplo")
