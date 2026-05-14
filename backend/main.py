@@ -137,19 +137,17 @@ async def _sync_drive_incremental() -> dict:
 
 
 async def _run_full_sync():
-    """Roda sync completo (Trello + Drive) sem bloquear o servidor."""
+    """Roda sync do Trello sem bloquear o servidor."""
     if _sync_status["running"]:
         logger.info("Sync já em andamento, ignorando")
         return
 
     _sync_status["running"] = True
     try:
-        logger.info("Iniciando sync completo (Trello + Drive)...")
+        logger.info("Iniciando sync do Trello...")
         trello_result = await _sync_trello_incremental()
-        drive_result = await _sync_drive_incremental()
         _sync_status["trello"] = trello_result
-        _sync_status["drive"] = drive_result
-        logger.info(f"Sync completo finalizado. Trello: {trello_result}, Drive: {drive_result}")
+        logger.info(f"Sync finalizado. Trello: {trello_result}")
     finally:
         _sync_status["running"] = False
 
@@ -182,7 +180,7 @@ def _start_scheduler():
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         scheduler = AsyncIOScheduler()
-        scheduler.add_job(_run_full_sync, "interval", hours=6, id="sync_periodico")
+        scheduler.add_job(_run_full_sync, "interval", hours=24, id="sync_periodico")
         scheduler.start()
         logger.info("Scheduler iniciado: sync a cada 6 horas")
         return scheduler
