@@ -1,9 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
 import os
+import asyncio
 import logging
 from dotenv import load_dotenv
 
@@ -18,30 +19,24 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+_sync_status = {"trello": None, "drive": None, "running": False}
 
-async def _auto_sync_trello():
-    """Importa projetos do Trello se o banco estiver vazio."""
+
+async def _sync_trello_incremental() -> dict:
+    """Sincroniza Trello — adiciona novos cards, nunca apaga existentes."""
     api_key = os.getenv("TRELLO_API_KEY")
     api_token = os.getenv("TRELLO_API_TOKEN")
     board_id = os.getenv("TRELLO_BOARD_ID")
 
     if not all([api_key, api_token, board_id]):
-        logger.info("Auto-sync Trello ignorado: credenciais não configuradas")
-        return
+        return {"ok": False, "erro": "Credenciais Trello não configuradas"}
+
+    from services.trello_sync import criar_sync_trello
+    import uuid
+    from datetime import datetime
 
     db = SessionLocal()
     try:
-        total = db.query(ProjetoORM).filter(ProjetoORM.trello_card_id.isnot(None)).count()
-        if total > 0:
-            logger.info(f"Auto-sync Trello ignorado: banco já tem {total} projetos")
-            return
-
-        logger.info("Banco vazio — iniciando auto-sync do Trello...")
-        from services.trello_sync import criar_sync_trello
-        import json
-        import uuid
-        from datetime import datetime
-
         sync = criar_sync_trello(api_key, api_token, board_id)
         dados = await sync.sincronizar_tudo(apenas_entrega=True)
         await sync.fechar()
@@ -49,17 +44,14 @@ async def _auto_sync_trello():
         criados = 0
         for card in dados.get("cards", []):
             card_id = card["id"]
-            existe = db.query(ProjetoORM).filter(ProjetoORM.trello_card_id == card_id).first()
-            if existe:
+            if db.query(ProjetoORM).filter(ProjetoORM.trello_card_id == card_id).first():
                 continue
 
             anexos = card.get("anexos", [])
-            # Todos os URLs — Vision classifica o que é foto vs ficha
             urls_todos = [a.get("url") for a in anexos if a.get("url")]
 
-            proj_id = f"proj_{uuid.uuid4().hex[:12]}"
             db.add(ProjetoORM(
-                id=proj_id,
+                id=f"proj_{uuid.uuid4().hex[:12]}",
                 nome=card["name"],
                 cliente=card["name"],
                 mes_entrega=card.get("mes_entrega", "INDEFINIDO"),
@@ -74,39 +66,110 @@ async def _auto_sync_trello():
             criados += 1
 
         db.commit()
-        logger.info(f"Auto-sync concluído: {criados} projetos importados do Trello")
+        msg = f"{criados} novos cards importados do Trello"
+        logger.info(f"Sync Trello: {msg}")
+        return {"ok": True, "criados": criados, "total_cards": len(dados.get("cards", []))}
 
     except Exception as e:
-        logger.error(f"Erro no auto-sync Trello: {e}")
+        logger.error(f"Erro no sync Trello: {e}")
+        return {"ok": False, "erro": str(e)}
     finally:
         db.close()
 
 
-async def _auto_vision_batch():
-    """Inicia análise unificada em background se há projetos pendentes."""
-    import asyncio
-    from routers.matching import _run_batch, _batch
-    from routers.matching import _url_eh_imagem
+async def _sync_drive_incremental() -> dict:
+    """Sincroniza Google Drive — adiciona novos arquivos, nunca apaga existentes."""
+    folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    if not folder_id:
+        return {"ok": False, "erro": "GOOGLE_DRIVE_FOLDER_ID não configurada"}
+
+    from services.drive_sync import listar_arquivos_drive_publico, parse_filename
+    import uuid
 
     db = SessionLocal()
     try:
-        from database import ProjetoORM
-        todos = db.query(ProjetoORM).all()
-        if not todos:
-            return
-        pendentes = []
-        for p in todos:
-            if p.analise_unificada == 1 and p.estrutura is not None:
-                continue  # já feito
-            if not p.urls_anexos:
+        arquivos = await listar_arquivos_drive_publico(folder_id)
+        criados = 0
+
+        for arquivo in arquivos:
+            drive_id = arquivo.get("id", "")
+            if not drive_id:
                 continue
-            if not any(_url_eh_imagem(u) for u in p.urls_anexos):
+
+            if db.query(ProjetoORM).filter(ProjetoORM.drive_file_id == drive_id).first():
                 continue
-            pendentes.append(p.id)
+
+            nome = arquivo.get("name", "")
+            url = arquivo.get("url", "")
+            metadata = parse_filename(nome)
+
+            db.add(ProjetoORM(
+                id=f"drive_{uuid.uuid4().hex[:12]}",
+                nome=nome[:100],
+                cliente="Google Drive",
+                mes_entrega="INDEFINIDO",
+                ano_entrega=2026,
+                foto_estofado_url=url,
+                descricao=f"Importado do Drive: {nome}",
+                observacoes=f"Drive ID: {drive_id}",
+                dados_ficha={
+                    "metragem_tecido": metadata.get("metragem"),
+                    "horas_totais": metadata.get("horas"),
+                    "quantidade_pecas": metadata.get("quantidade"),
+                },
+                drive_file_id=drive_id,
+                analise_unificada=0,
+                materiais=[],
+                horas_trabalho=[],
+            ))
+            criados += 1
+
+        db.commit()
+        msg = f"{criados} novos arquivos importados do Drive"
+        logger.info(f"Sync Drive: {msg}")
+        return {"ok": True, "criados": criados, "total_arquivos": len(arquivos)}
+
+    except Exception as e:
+        logger.error(f"Erro no sync Drive: {e}")
+        return {"ok": False, "erro": str(e)}
+    finally:
+        db.close()
+
+
+async def _run_full_sync():
+    """Roda sync completo (Trello + Drive) sem bloquear o servidor."""
+    if _sync_status["running"]:
+        logger.info("Sync já em andamento, ignorando")
+        return
+
+    _sync_status["running"] = True
+    try:
+        logger.info("Iniciando sync completo (Trello + Drive)...")
+        trello_result = await _sync_trello_incremental()
+        drive_result = await _sync_drive_incremental()
+        _sync_status["trello"] = trello_result
+        _sync_status["drive"] = drive_result
+        logger.info(f"Sync completo finalizado. Trello: {trello_result}, Drive: {drive_result}")
+    finally:
+        _sync_status["running"] = False
+
+
+async def _auto_vision_batch():
+    """Inicia análise Vision em background para projetos pendentes com URLs de imagem."""
+    from routers.matching import _run_batch, _url_eh_imagem
+
+    db = SessionLocal()
+    try:
+        pendentes = [
+            p.id for p in db.query(ProjetoORM).all()
+            if not (p.analise_unificada == 1 and p.estrutura is not None)
+            and p.urls_anexos
+            and any(_url_eh_imagem(u) for u in p.urls_anexos)
+        ]
         if not pendentes:
-            logger.info("Auto-vision: nada a fazer (tudo já analisado)")
+            logger.info("Auto-vision: nada pendente")
             return
-        logger.info(f"Auto-vision: {len(pendentes)} cards pendentes — iniciando em background")
+        logger.info(f"Auto-vision: {len(pendentes)} projetos pendentes — iniciando em background")
         asyncio.create_task(_run_batch(pendentes))
     except Exception as e:
         logger.error(f"Erro no auto-vision: {e}")
@@ -114,13 +177,31 @@ async def _auto_vision_batch():
         db.close()
 
 
+def _start_scheduler():
+    """Configura APScheduler para sync periódico a cada 6 horas."""
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(_run_full_sync, "interval", hours=6, id="sync_periodico")
+        scheduler.start()
+        logger.info("Scheduler iniciado: sync a cada 6 horas")
+        return scheduler
+    except ImportError:
+        logger.warning("APScheduler não instalado — sync periódico desabilitado")
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    scheduler = _start_scheduler()
     if os.getenv("AUTO_SYNC_TRELLO", "").lower() == "true":
-        await _auto_sync_trello()
+        asyncio.create_task(_run_full_sync())
+        await asyncio.sleep(0.1)  # deixa a task iniciar antes do servidor subir
         await _auto_vision_batch()
     yield
+    if scheduler:
+        scheduler.shutdown()
 
 
 app = FastAPI(
@@ -153,6 +234,25 @@ def health():
     finally:
         db.close()
     return {"status": "ok", "version": "0.2.0", "total_projetos": total}
+
+
+@app.post("/sync/run")
+async def trigger_sync(background_tasks: BackgroundTasks):
+    """Dispara sync manual de Trello + Drive em background."""
+    if _sync_status["running"]:
+        return {"status": "ja_rodando", "msg": "Sync já em andamento"}
+    background_tasks.add_task(_run_full_sync)
+    return {"status": "iniciado", "msg": "Sync iniciado em background"}
+
+
+@app.get("/sync/status")
+def sync_status():
+    """Retorna resultado do último sync."""
+    return {
+        "running": _sync_status["running"],
+        "ultimo_trello": _sync_status["trello"],
+        "ultimo_drive": _sync_status["drive"],
+    }
 
 
 @app.get("/")
