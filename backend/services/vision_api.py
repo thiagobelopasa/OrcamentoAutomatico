@@ -74,7 +74,7 @@ class ClaudeVision:
             prompt += f"\n\nContexto adicional: {contexto}"
 
         response = self.client.messages.create(
-            model="claude-opus-4-1-20250805",
+            model="claude-opus-4-7",
             max_tokens=2048,
             messages=[
                 {

@@ -89,7 +89,7 @@ async def analisar_imagem_orcamento(file: UploadFile = File(...)) -> dict:
     try:
         # Usa Vision API para analisar
         vision = criar_vision(os.getenv("ANTHROPIC_API_KEY"))
-        resultado = vision.analisar_imagem_orcamento(str(file_path))
+        resultado = vision.analisar_orçamento_sofa(str(file_path))
 
         # Cria orçamento a partir dos dados extraídos
         dados_orcamento = resultado["dados"]

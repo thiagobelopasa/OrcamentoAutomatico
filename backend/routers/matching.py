@@ -12,7 +12,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from services.vision_matcher import VisionMatcher, BANCO_EXEMPLO
-from services import card_analyzer, vision_acuracia_maxima, image_dedup
+from services import card_analyzer, image_dedup
 from database import get_db, ProjetoORM, SessionLocal, AnaliseProjeto
 
 router = APIRouter(prefix="/matching", tags=["matching"])
