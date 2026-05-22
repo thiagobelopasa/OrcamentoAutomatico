@@ -196,7 +196,7 @@ async def lifespan(app: FastAPI):
     if os.getenv("AUTO_SYNC_TRELLO", "").lower() == "true":
         asyncio.create_task(_run_full_sync())
         await asyncio.sleep(0.1)  # deixa a task iniciar antes do servidor subir
-        await _auto_vision_batch()
+    # Auto-vision desabilitado — análise só por demanda via /matching/analisar-historico
     yield
     if scheduler:
         scheduler.shutdown()
