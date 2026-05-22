@@ -523,7 +523,7 @@ table tr:last-child td{border-bottom:none}
     <div class="form-group">
       <label>URL do Backend</label>
       <input type="text" id="apiUrlInput" placeholder="https://thiagopasa-orcamento-automatico-backend.hf.space">
-      <small>Em produção: URL do Render.com/Railway. Localmente: https://thiagopasa-orcamento-automatico-backend.hf.space</small>
+      <small>Backend: https://thiagopasa-orcamento-automatico-backend.hf.space</small>
     </div>
     <div class="form-group">
       <label>Taxa Mão de Obra (R$/hora)</label>
@@ -539,7 +539,8 @@ table tr:last-child td{border-bottom:none}
 
 <script>
 // ═══════════════ CONFIG ═══════════════
-let API = localStorage.getItem('imperial_api') || 'https://thiagopasa-orcamento-automatico-backend.hf.space';
+const _savedApi = localStorage.getItem('imperial_api') || '';
+let API = (_savedApi.startsWith('http://') || _savedApi.startsWith('https://')) ? _savedApi : 'https://thiagopasa-orcamento-automatico-backend.hf.space';
 let TAXA_HORA = parseFloat(localStorage.getItem('imperial_taxa_hora') || '50');
 
 function toggleModal() {
@@ -692,7 +693,7 @@ function renderResultado() {
         ? m.foto_url.replace(/drive\.google\.com\/uc\?id=([^&]+).*/, 'drive.google.com/thumbnail?id=$1&sz=w300')
         : (hasFoto ? m.foto_url : '');
     const semEst = m.sem_estrutura;
-    const trelloLink = m.trello_card_url ? `<a href="${m.trello_card_url}" target="_blank" style="font-size:10px;color:var(--brown-light);text-decoration:none">↗ Ver no Trello</a>` : '';
+    const trelloLink = m.trello_card_url ? `<a href="${m.trello_card_url}" target="_blank" style="font-size:12px;color:var(--brown);font-weight:600;text-decoration:none;border:1px solid var(--brown-light);border-radius:6px;padding:4px 10px;white-space:nowrap">🔗 Ver no Trello</a>` : '';
     const mesTag = m.mes_entrega ? `<span class="meta">${m.mes_entrega} ${m.ano_entrega||''}</span>` : '';
 
     el.innerHTML += `

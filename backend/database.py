@@ -4,15 +4,24 @@ from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
 
-# Railway monta volume persistente em /data; fallback local para dev
-_DB_PATH = "/data/orcamento.db" if os.path.isdir("/data") else "orcamento.db"
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{_DB_PATH}")
+# Produção: Supabase PostgreSQL via DATABASE_URL; dev: SQLite local
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///orcamento.db")
 
-# Criar engine
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-)
+_is_postgres = "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL
+
+if _is_postgres:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"sslmode": "require"},
+        pool_size=5,
+        max_overflow=10,
+        pool_recycle=300,
+    )
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+    )
 
 # Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -142,7 +151,7 @@ def init_db():
     """Inicializa o banco de dados (cria todas as tabelas)"""
     Base.metadata.create_all(bind=engine)
     # Migração para bancos existentes — adiciona colunas novas se faltarem
-    is_postgres = "postgres" in DATABASE_URL
+    is_postgres = _is_postgres
     json_type = "JSONB" if is_postgres else "JSON"
     migrations = [
         f"visao_fotos {json_type}",

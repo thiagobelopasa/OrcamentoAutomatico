@@ -474,51 +474,88 @@ def encontrar_hash_duplicatas(
         return []
 
 
+def _pré_filtrar_por_hash(uploaded_path: str, candidatos: list[dict], top_n: int = 20) -> tuple[list[dict], list[dict]]:
+    """
+    Calcula dhash da foto enviada e de cada candidato (já baixado localmente).
+    Retorna (duplicatas_exatas, top_n_mais_proximos) sem nenhuma chamada de API.
+
+    duplicatas_exatas: candidatos com distância Hamming ≤ 5 (score 99-100, vai pular Vision)
+    top_n_mais_proximos: os N candidatos com menor distância Hamming (vão para Vision)
+    """
+    from services.image_dedup import get_image_hash, hamming_distance
+
+    try:
+        uploaded_hash = get_image_hash(uploaded_path, use_perceptual=True)
+    except Exception:
+        # Se falhar, retorna todos como candidatos (sem filtro)
+        return [], candidatos[:top_n]
+
+    scores_hash = []
+    for c in candidatos:
+        try:
+            cand_hash = get_image_hash(c["path"], use_perceptual=True)
+            dist = hamming_distance(uploaded_hash, cand_hash)
+            scores_hash.append((dist, c))
+        except Exception:
+            scores_hash.append((64, c))  # distância máxima se falhar
+
+    scores_hash.sort(key=lambda x: x[0])
+
+    duplicatas = []
+    restantes = []
+    for dist, c in scores_hash:
+        if dist <= 5:
+            score = 100.0 if dist == 0 else round(100.0 - (dist / 64 * 15), 1)
+            duplicatas.append({
+                "id": c["id"],
+                "score": score,
+                "nota": f"duplicata perceptual (distância {dist}/64 bits)",
+            })
+        else:
+            restantes.append(c)
+
+    return duplicatas, restantes[:top_n]
+
+
 def comparar_foto_com_candidatos(
     uploaded_path: str,
     candidatos: list[dict],
     batch_size: int = 10,
-    check_hash_first: bool = True,
 ) -> list[dict]:
     """
     Compara visualmente uploaded_path contra cada candidato.
     candidatos: [{id, path, media_type}]
 
-    OTIMIZAÇÃO: Se check_hash_first=True, primeiro procura por duplicatas exatas/perceptuais.
-    Candidatas encontradas retornam imediatamente com score 99-100 (sem Vision).
-
-    Agrupa restantes em lotes de batch_size → 1 chamada Vision (Sonnet) por lote.
+    Fluxo:
+    1. dhash filtra duplicatas exatas (sem API) e seleciona top 20 mais próximos por hash
+    2. Vision (Sonnet) compara apenas esses top 20 em lotes de batch_size
     Retorna: [{id, score, nota}] ordenado por score DESC
     """
     if not candidatos:
         return []
 
-    # Passo 1: Check hash para duplicatas (rápido, sem API)
-    resultados_hash = []
-    candidatos_restantes = candidatos
-    if check_hash_first:
-        resultados_hash = encontrar_hash_duplicatas(uploaded_path, candidatos)
-        if resultados_hash:
-            # Remove candidatos que tiveram match de hash da lista para Vision
-            ids_encontradas = {r["id"] for r in resultados_hash}
-            candidatos_restantes = [c for c in candidatos if c["id"] not in ids_encontradas]
+    # Passo 1: pré-filtro por hash perceptual — sem chamada de API
+    duplicatas_hash, candidatos_para_vision = _pré_filtrar_por_hash(uploaded_path, candidatos, top_n=20)
 
-    # Passo 2: Comparação visual com Vision (Sonnet) para restantes
+    # Se já achou duplicata exata, retorna imediatamente sem Vision
+    if duplicatas_hash and duplicatas_hash[0]["score"] >= 99:
+        return duplicatas_hash
+
+    # Passo 2: Vision apenas nos top 20 por proximidade de hash
     client = _get_client()
     if not client:
-        resultados_vision = [{"id": c["id"], "score": 0, "nota": "sem_api_key"} for c in candidatos_restantes]
+        resultados_vision = [{"id": c["id"], "score": 0, "nota": "sem_api_key"} for c in candidatos_para_vision]
     else:
         with open(uploaded_path, "rb") as f:
             uploaded_b64 = base64.standard_b64encode(f.read()).decode("utf-8")
         uploaded_media_type = _media_type(uploaded_path)
 
         resultados_vision: list[dict] = []
-        for i in range(0, len(candidatos_restantes), batch_size):
-            lote = candidatos_restantes[i : i + batch_size]
+        for i in range(0, len(candidatos_para_vision), batch_size):
+            lote = candidatos_para_vision[i : i + batch_size]
             try:
                 results = _comparar_lote_sync(uploaded_b64, uploaded_media_type, lote, client)
                 resultados_vision.extend(results)
-                # Candidatos sem score na resposta → score 0
                 ids_com_score = {r["id"] for r in results}
                 for c in lote:
                     if c["id"] not in ids_com_score:
@@ -527,7 +564,7 @@ def comparar_foto_com_candidatos(
                 for c in lote:
                     resultados_vision.append({"id": c["id"], "score": 0, "nota": f"erro: {e}"})
 
-    # Combina resultados: hash (prioridade) + vision
-    todos_resultados = resultados_hash + resultados_vision
+    # Combina: duplicatas hash (prioridade) + resultados Vision
+    todos_resultados = duplicatas_hash + resultados_vision
     todos_resultados.sort(key=lambda x: x["score"], reverse=True)
     return todos_resultados

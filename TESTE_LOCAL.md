@@ -161,10 +161,9 @@ sqlite3 backend/orcamento.db "SELECT COUNT(*) FROM projetos;"
 
 Depois de validar tudo localmente:
 
-1. Implementar banco de dados em produção (PostgreSQL)
-2. Deploy no Railway ou Vercel
-3. Integração com Trello remota
-4. Frontend completo
+1. Push para o GitHub — GitHub Actions faz deploy automático no HF Space
+2. Configurar `DATABASE_URL` (Supabase PostgreSQL) nas secrets do HF Space
+3. Site disponível na Vercel (deploy automático via GitHub)
 
 ---
 

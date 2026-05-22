@@ -567,27 +567,11 @@ async def analisar_completo(
         for p in projetos_todos:
             if not p.foto_estofado_url:
                 continue  # sem foto identificada → não entra no pool
-            # Pré-filtro por tipo_peca (só se detectado e pool grande)
-            if tipo_peca_upload and len(projetos_todos) > 10:
-                tp = (p.dados_ficha or {}).get("tipo_peca") or ""
-                if tp.upper() != tipo_peca_upload:
-                    continue
             candidatos_expandidos.append({
                 "cand_id": f"{p.id}||0",
                 "proj_id": p.id,
                 "url": p.foto_estofado_url,
             })
-
-        # Se pré-filtro zerou o pool, usa todos sem filtrar por tipo_peca
-        if not candidatos_expandidos:
-            for p in projetos_todos:
-                if not p.foto_estofado_url:
-                    continue
-                candidatos_expandidos.append({
-                    "cand_id": f"{p.id}||0",
-                    "proj_id": p.id,
-                    "url": p.foto_estofado_url,
-                })
 
         # Cap de segurança
         if len(candidatos_expandidos) > 300:
