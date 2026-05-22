@@ -106,8 +106,15 @@ async def _baixar_imagens_card(urls: List[str], oauth: str, proj_id: str) -> tup
             if not _url_eh_imagem(foto_url):
                 continue
             try:
-                headers = {"Authorization": oauth} if "trello.com" in foto_url else {}
-                resp = await client.get(foto_url, headers=headers)
+                # Trello exige key+token como query params para download de anexos
+                url = foto_url
+                if "trello.com" in foto_url:
+                    key = os.getenv("TRELLO_API_KEY", "")
+                    token = os.getenv("TRELLO_API_TOKEN", "")
+                    if key and token:
+                        sep = "&" if "?" in foto_url else "?"
+                        url = f"{foto_url}{sep}key={key}&token={token}"
+                resp = await client.get(url)
                 if resp.status_code != 200:
                     logger.warning(f"Foto indisponível ({resp.status_code}): {foto_url[:60]}")
                     continue
