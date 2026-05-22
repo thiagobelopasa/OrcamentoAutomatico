@@ -292,19 +292,18 @@ async def parar_analise() -> dict:
 @router.post("/reanalisar-trello")
 async def reanalisar_trello(
     background_tasks: BackgroundTasks,
+    projeto_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ) -> dict:
-    """Força re-análise Vision de todos os projetos do Trello (proj_*), ignorando análises anteriores."""
+    """Força re-análise Vision de projetos do Trello. Se projeto_id informado, só analisa esse."""
     if _batch["running"]:
         return {"mensagem": "Análise já em andamento", "status": _batch}
 
-    projetos = (
-        db.query(ProjetoORM)
-        .filter(ProjetoORM.id.like("proj_%"))
-        .all()
-    )
+    query = db.query(ProjetoORM).filter(ProjetoORM.id.like("proj_%"))
+    if projeto_id:
+        query = query.filter(ProjetoORM.id == projeto_id)
+    projetos = query.all()
 
-    # Reseta flag para forçar re-análise mesmo em projetos já analisados
     ids = []
     for p in projetos:
         if not p.urls_anexos:
@@ -317,14 +316,13 @@ async def reanalisar_trello(
     db.commit()
 
     if not ids:
-        return {"mensagem": "Nenhum projeto Trello com imagens encontrado"}
+        return {"mensagem": "Nenhum projeto encontrado com imagens"}
 
     background_tasks.add_task(_run_batch, ids)
 
     return {
-        "mensagem": f"Re-análise iniciada para {len(ids)} projetos Trello",
+        "mensagem": f"Re-análise iniciada para {len(ids)} projeto(s)",
         "total": len(ids),
-        "estimativa_minutos": round(len(ids) * 0.5, 1),
         "acompanhe_em": "/matching/analisar-historico/status",
     }
 
